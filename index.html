@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0" />
+    <title>Control de Stock</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                50: '#f0f9ff',
+                100: '#e0f2fe',
+                500: '#0ea5e9',
+                600: '#0284c7',
+                900: '#0c4a6e',
+              }
+            }
+          }
+        }
+      }
+    </script>
+
+    <!-- Babel para transformar JSX en el navegador -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Librería para escanear códigos QR/Barras -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+
+    <style>
+      body { background-color: #f8fafc; -webkit-tap-highlight-color: transparent; }
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      
+      #reader video {
+        object-fit: cover;
+        width: 100% !important;
+        height: 100% !important;
+        border-radius: 0.5rem;
+      }
+      
+      /* Animación de pulso para el análisis de IA */
+      @keyframes ai-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(147, 51, 234, 0.7); }
+        70% { box-shadow: 0 0 0 10px rgba(147, 51, 234, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(147, 51, 234, 0); }
+      }
+      .ai-scanning {
+        animation: ai-pulse 2s infinite;
+      }
+      
+      /* Animación de línea de escaneo */
+      @keyframes scan-line {
+        0% { top: 0%; opacity: 0; }
+        10% { opacity: 1; }
+        90% { opacity: 1; }
+        100% { top: 100%; opacity: 0; }
+      }
+      .scan-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: #0ea5e9;
+        box-shadow: 0 0 4px #0ea5e9;
+        animation: scan-line 2s linear infinite;
+      }
+    </style>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- Lógica Principal de la Aplicación -->
+    <script type="text/babel" data-presets="react" data-type="module">
+        import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
+        import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+        import { Scan, Plus, Search, Package, Sheet, ExternalLink, X, AlertCircle, Wand2, Save, Loader2, Camera, Image as ImageIcon, Sparkles, Cloud, CloudOff, RefreshCw, AlertTriangle } from 'https://esm.sh/lucide-react@0.344.0';
+        import { GoogleGenAI, Type } from 'https://esm.sh/@google/genai';
+
+        // --- CONFIGURACIÓN Y CONSTANTES ---
+        const SHEETS_URL = "https://docs.google.com/spreadsheets/d/11X8ZnPzmpA-gDXyHNYDc5yyjm8ztSzzm4IJsAvgw-ho/edit?gid=0#gid=0";
+        // ¡IMPORTANTE! Reemplaza esto con la URL de tu Web App de Google Apps Script
+        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzpbFLl8WcjWAitwrv6TwgBM5AhArIOBVBRDVWooXZ4u3zq4gpucX35n48quIgbYlNL/exec"; 
+        const STORAGE_KEY = 'inventario_data_v1';
+        const API_KEY = "AIzaSyB3Oy5Yyqxxxtsx-mu6LgfEUmTqUaepyEY";
+
+        // --- SERVICIOS ---
+        
+        // Sincronización con Google Sheets
+        const syncToSheets = async (item) => {
+            if (!APPS_SCRIPT_URL) {
+                console.warn("APPS_SCRIPT_URL no configurada");
+                return false;
+            }
+            try {
+                // Usamos no-cors para permitir enviar datos desde localhost/archivos
+                await fetch(APPS_SCRIPT_URL, {
+                    method: 'POST',
+                    mode: 'no-cors', 
+                    headers: {
+                        'Content-Type': 'text/plain', // Enviamos como texto plano para evitar preflight CORS
+                    },
+                    body: JSON.stringify(item)
+                });
+                return true;
+            } catch (error) {
+                console.error("Error sincronizando con Sheets:", error);
+                return false;
+            }
+        };
+
+        const getInventory = () => {
+            try {
+                const data = localStorage.getItem(STORAGE_KEY);
+                return data ? JSON.parse(data) : [];
+            } catch (e) { return []; }
+        };
+
+        const saveInventory = (items) => {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+        };
+
+        const getItemByBarcode = (barcode) => {
+            const items = getInventory();
+            return items.find(item => item.barcode === barcode);
+        };
+
+        const updateItemStock = async (barcode, increment = 1) => {
+            const items = getInventory();
+            const index = items.findIndex(item => item.barcode === barcode);
+            
+            if (index !== -1) {
+                items[index].stock += increment;
+                items[index].lastUpdated = new Date().toISOString();
+                saveInventory(items);
+                // Sincronizar en segundo plano
+                await syncToSheets(items[index]);
+                return items[index];
+            }
+            return null;
+        };
+
+        const addOrUpdateItem = async (newItem) => {
+            const items = getInventory();
+            const index = items.findIndex(item => item.barcode === newItem.barcode);
+            
+            if (index !== -1) {
+                items[index] = { ...newItem, stock: items[index].stock, lastUpdated: new Date().toISOString() };
+                saveInventory(items);
+                await syncToSheets(items[index]);
+            } else {
+                const itemToSave = { ...newItem, lastUpdated: new Date().toISOString() };
+                items.push(itemToSave);
+                saveInventory(items);
+                await syncToSheets(itemToSave);
+            }
+        };
+
+        const ai = new GoogleGenAI({ apiKey: API_KEY });
+
+        const fileToBase64 = (file) => {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = () => {
+                    const base64String = reader.result.split(',')[1];
+                    const mimeType = reader.result.split(';')[0].split(':')[1];
+                    resolve({ data: base64String, mimeType });
+                };
+                reader.onerror = error => reject(error);
+            });
+        };
+
+        const analyzeImageForProduct = async (file) => {
+            try {
+                const { data, mimeType } = await fileToBase64(file);
+                
+                const prompt = `
+                Analiza esta imagen de un producto. Tu objetivo es extraer toda la información posible.
+                1. Intenta leer el CÓDIGO DE BARRAS si es visible en la imagen.
+                2. Identifica la MARCA y el MODELO.
+                3. Identifica el COLOR y sugiere una UBICACIÓN (ej. Cocina) y TIPO DE INSTALACIÓN (ej. Pared).
+                
+                Responde EXCLUSIVAMENTE en formato JSON con la siguiente estructura:
+                {
+                    "barcode": "string o null si no es visible",
+                    "brand": "string",
+                    "model": "string",
+                    "color": "string",
+                    "location": "string",
+                    "installType": "string",
+                    "details": "string (breve descripción)"
+                }
+                `;
+
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: {
+                        parts: [
+                            { inlineData: { mimeType: mimeType, data: data } },
+                            { text: prompt }
+                        ]
+                    },
+                    config: {
+                        responseMimeType: "application/json",
+                        responseSchema: {
+                            type: Type.OBJECT,
+                            properties: {
+                                barcode: { type: Type.STRING },
+                                brand: { type: Type.STRING },
+                                model: { type: Type.STRING },
+                                color: { type: Type.STRING },
+                                location: { type: Type.STRING },
+                                installType: { type: Type.STRING },
+                                details: { type: Type.STRING }
+                            },
+                            required: ["brand", "model", "details"]
+                        }
+                    }
+                });
+
+                const text = response.text;
+                if (!text) return null;
+                return JSON.parse(text);
+
+            } catch (error) {
+                console.error("Error analizando imagen con Gemini:", error);
+                throw error;
+            }
+        };
+
+        const suggestProductDetails = async (brand, model) => {
+            try {
+                const prompt = `Sugiere instalación y ubicación para: ${brand} ${model}. JSON: {installType, location, details}`;
+                const response = await ai.models.generateContent({
+                    model: 'gemini-2.5-flash',
+                    contents: prompt,
+                    config: {
+                        responseMimeType: "application/json"
+                    }
+                });
+                return JSON.parse(response.text);
+            } catch (e) { return null; }
+        };
+
+        // --- COMPONENTES ---
+
+        const Scanner = ({ onScanSuccess, onAiDataFound, onClose }) => {
+            const [permissionError, setPermissionError] = useState(null);
+            const [isAnalyzing, setIsAnalyzing] = useState(false);
+            const [statusMsg, setStatusMsg] = useState('');
+            const [cameraReady, setCameraReady] = useState(false);
+            const [useLocalFile, setUseLocalFile] = useState(false);
+            
+            const scannerRef = useRef(null);
+            const fileInputRef = useRef(null);
+
+            useEffect(() => {
+                let html5QrCode;
+                let isMounted = true;
+
+                // Verificación estricta de protocolo para dar feedback útil
+                const protocol = window.location.protocol;
+                const isFileOrContent = protocol === 'file:' || protocol === 'content:';
+                
+                if (isFileOrContent) {
+                    setUseLocalFile(true); // Activar modo archivo local automáticamente
+                    setPermissionError("MODO LOCAL DETECTADO");
+                    // No hacemos return aquí para permitir que se renderice la UI alternativa
+                    return;
+                }
+
+                const startCamera = async () => {
+                    await new Promise(r => setTimeout(r, 400)); // Esperar renderizado
+                    if (!document.getElementById("reader")) return;
+
+                    try {
+                        html5QrCode = new Html5Qrcode("reader");
+                        scannerRef.current = html5QrCode;
+
+                        // Configuración optimizada
+                        const qrBoxSize = Math.min(window.innerWidth * 0.7, 300);
+                        const config = { 
+                            fps: 15, 
+                            qrbox: { width: qrBoxSize, height: qrBoxSize },
+                            aspectRatio: window.innerHeight / window.innerWidth,
+                            disableFlip: false // Importante para móviles
+                        };
+
+                        // Intentar iniciar directamente con "environment" sin listar dispositivos primero
+                        // Esto es más robusto en Android/iOS cuando no hay permisos previos
+                        await html5QrCode.start(
+                            { facingMode: "environment" }, 
+                            config,
+                            (decodedText) => {
+                                if (isMounted) {
+                                    if (navigator.vibrate) navigator.vibrate(100);
+                                    onScanSuccess(decodedText);
+                                    html5QrCode.stop().then(() => html5QrCode.clear()).catch(console.error);
+                                }
+                            },
+                            () => {} // Ignorar errores de frame vacíos
+                        );
+                        
+                        if (isMounted) setCameraReady(true);
+
+                    } catch (err) {
+                        console.error("Error cámara:", err);
+                        if (isMounted) {
+                             let msg = "No se pudo acceder a la cámara.";
+                             if (err.name === 'NotAllowedError') msg = "Permiso denegado.";
+                             if (err.name === 'NotFoundError') msg = "No se encontró cámara.";
+                             // Si falla, mostramos la UI de carga de fotos
+                             setPermissionError(msg);
+                        }
+                    }
+                };
+
+                if (!isFileOrContent) {
+                    startCamera();
+                }
+
+                return () => {
+                    isMounted = false;
+                    if (scannerRef.current && scannerRef.current.isScanning) {
+                        scannerRef.current.stop().then(() => scannerRef.current.clear()).catch(console.error);
+                    }
+                };
+            }, [onScanSuccess]);
+
+            const handleFileInput = async (e) => {
+                if (e.target.files.length === 0) return;
+                
+                const imageFile = e.target.files[0];
+                setIsAnalyzing(true);
+                setStatusMsg("Leyendo código...");
+
+                try {
+                    const html5QrCode = new Html5Qrcode("reader");
+                    const decodedText = await html5QrCode.scanFile(imageFile, true);
+                    onScanSuccess(decodedText);
+                } catch (err) {
+                    setStatusMsg("Analizando con IA...");
+                    try {
+                        const aiData = await analyzeImageForProduct(imageFile);
+                        if (aiData) {
+                            const finalBarcode = aiData.barcode || `AUTO-${Date.now().toString().slice(-6)}`;
+                            onAiDataFound({ ...aiData, barcode: finalBarcode });
+                        } else {
+                            alert("No se pudo identificar el producto.");
+                        }
+                    } catch (aiError) {
+                        alert("Error al analizar la imagen.");
+                    }
+                } finally {
+                    setIsAnalyzing(false);
+                    setStatusMsg("");
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 z-50 bg-black flex flex-col">
+                    {/* Header */}
+                    <div className="flex justify-between items-center p-4 bg-gray-900 text-white z-10">
+                        <h2 className="font-semibold text-lg flex items-center gap-2">
+                            <Scan className="text-brand-500" /> Escáner
+                        </h2>
+                        <button onClick={onClose} className="p-2 bg-gray-800 rounded-full"><X size={20} /></button>
+                    </div>
+                    
+                    {/* Main Area */}
+                    <div className="relative flex-1 bg-black flex flex-col items-center justify-center p-4">
+                         {isAnalyzing && (
+                            <div className="absolute inset-0 z-50 bg-black/90 flex flex-col items-center justify-center text-white">
+                                <Sparkles size={48} className="text-purple-400 mb-4 animate-spin-slow" />
+                                <p className="text-xl font-bold">Procesando...</p>
+                                <p className="text-sm text-gray-400 mt-2">{statusMsg}</p>
+                            </div>
+                         )}
+
+                         {permissionError ? (
+                            <div className="w-full max-w-sm bg-gray-900 rounded-2xl p-6 text-center border border-gray-800 shadow-2xl">
+                                <div className="w-16 h-16 bg-yellow-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <AlertTriangle size={32} className="text-yellow-500" />
+                                </div>
+                                <h3 className="text-white font-bold text-xl mb-2">Modo Foto Activado</h3>
+                                <p className="text-gray-400 text-sm mb-6 leading-relaxed">
+                                    {useLocalFile 
+                                        ? "Al abrir el archivo directamente desde WhatsApp o Archivos, el navegador bloquea la cámara por seguridad." 
+                                        : permissionError}
+                                    <br/><br/>
+                                    <strong>¡No te preocupes!</strong> Puedes usar la cámara tomando una foto normal.
+                                </p>
+                                
+                                <button onClick={() => fileInputRef.current?.click()} className="w-full bg-gradient-to-r from-blue-600 to-brand-600 text-white py-4 rounded-xl font-bold text-lg hover:from-blue-700 hover:to-brand-700 transition-all flex items-center justify-center gap-3 shadow-lg shadow-blue-900/30">
+                                    <Camera size={24} />
+                                    Tomar Foto del Código
+                                </button>
+                                <p className="mt-3 text-xs text-gray-500">Funciona para Códigos de Barras y Productos</p>
+                            </div>
+                         ) : (
+                            <div className="w-full h-full relative rounded-2xl overflow-hidden bg-gray-900">
+                                <div id="reader" className="w-full h-full"></div>
+                                {cameraReady && (
+                                    <div className="absolute inset-0 pointer-events-none border-[50px] border-black/50 flex items-center justify-center">
+                                        <div className="w-full h-[2px] bg-red-500 shadow-[0_0_10px_red]"></div>
+                                    </div>
+                                )}
+                            </div>
+                         )}
+                         
+                         <input type="file" ref={fileInputRef} className="hidden" accept="image/*" capture="environment" onChange={handleFileInput} />
+                    </div>
+                </div>
+            );
+        };
+
+        const ProductForm = ({ initialData, existingItem, onSave, onCancel }) => {
+            const [barcode, setBarcode] = useState(initialData?.barcode || '');
+            const [brand, setBrand] = useState(existingItem?.brand || initialData?.brand || '');
+            const [model, setModel] = useState(existingItem?.model || initialData?.model || '');
+            const [color, setColor] = useState(existingItem?.color || initialData?.color || '');
+            const [location, setLocation] = useState(existingItem?.location || initialData?.location || '');
+            const [installType, setInstallType] = useState(existingItem?.installType || initialData?.installType || '');
+            const [details, setDetails] = useState(existingItem?.details || initialData?.details || '');
+            const [stock, setStock] = useState(existingItem?.stock || 1);
+            const [isAiLoading, setIsAiLoading] = useState(false);
+            const [isSaving, setIsSaving] = useState(false);
+
+            const handleAiSuggest = async () => {
+                if (!brand || !model) return;
+                setIsAiLoading(true);
+                const suggestion = await suggestProductDetails(brand, model);
+                setIsAiLoading(false);
+                if (suggestion) {
+                    setInstallType(suggestion.installType || installType);
+                    setLocation(suggestion.location || location);
+                    setDetails(suggestion.details || details);
+                }
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                setIsSaving(true);
+                await onSave({
+                    id: barcode,
+                    barcode,
+                    brand,
+                    model,
+                    color,
+                    location,
+                    installType,
+                    stock: Number(stock),
+                    details,
+                    lastUpdated: new Date().toISOString()
+                });
+                setIsSaving(false);
+            };
+
+            return (
+                <div className="fixed inset-0 z-40 bg-gray-100/90 backdrop-blur-sm flex justify-center items-end sm:items-center p-0 sm:p-4 overflow-y-auto">
+                    <div className="bg-white w-full max-w-lg rounded-t-2xl sm:rounded-2xl shadow-xl flex flex-col max-h-[90vh]">
+                        <div className="p-4 border-b flex justify-between items-center sticky top-0 bg-white rounded-t-2xl z-10">
+                            <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                                {initialData?.brand ? <Sparkles size={18} className="text-purple-500" /> : null}
+                                {existingItem ? 'Editar Producto' : 'Nuevo Producto'}
+                            </h2>
+                            <button onClick={onCancel} className="text-gray-500 hover:bg-gray-100 p-2 rounded-full"><X size={24} /></button>
+                        </div>
+                        <div className="p-6 overflow-y-auto flex-1 space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Código de Barras</label>
+                                <input type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} className="w-full p-2 border rounded-lg bg-gray-50 font-mono text-gray-600" />
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Marca</label>
+                                    <input type="text" value={brand} onChange={(e) => setBrand(e.target.value)} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-brand-500" required />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Modelo</label>
+                                    <input type="text" value={model} onChange={(e) => setModel(e.target.value)} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-brand-500" required />
+                                </div>
+                            </div>
+                            <div className="flex justify-end">
+                                <button type="button" onClick={handleAiSuggest} disabled={isAiLoading || !brand || !model} className={`flex items-center gap-2 text-sm px-3 py-1.5 rounded-full transition-colors ${!brand || !model ? 'bg-gray-100 text-gray-400' : 'bg-purple-50 text-purple-700 border border-purple-200'}`}>
+                                    {isAiLoading ? <Loader2 className="animate-spin" size={14} /> : <Wand2 size={14} />} Autocompletar Detalles
+                                </button>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Color</label>
+                                    <input type="text" value={color} onChange={(e) => setColor(e.target.value)} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-brand-500" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Stock</label>
+                                    <input type="number" value={stock} onChange={(e) => setStock(Number(e.target.value))} min="1" className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-brand-500" />
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Ubicación</label>
+                                    <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-brand-500" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">Tipo Instalación</label>
+                                    <input type="text" value={installType} onChange={(e) => setInstallType(e.target.value)} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-brand-500" />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Detalles</label>
+                                <textarea value={details} onChange={(e) => setDetails(e.target.value)} rows={3} className="w-full p-2 border rounded-lg focus:ring-2 focus:ring-brand-500"></textarea>
+                            </div>
+                        </div>
+                        <div className="p-4 border-t bg-gray-50 rounded-b-2xl">
+                            <button onClick={handleSubmit} disabled={isSaving} className="w-full bg-brand-600 text-white py-3 px-4 rounded-xl font-semibold shadow-lg hover:bg-brand-700 flex items-center justify-center gap-2 disabled:opacity-70">
+                                {isSaving ? <Loader2 className="animate-spin" size={20} /> : <Save size={20} />} 
+                                {isSaving ? 'Guardando en la nube...' : 'Guardar Producto'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [items, setItems] = useState([]);
+            const [showScanner, setShowScanner] = useState(false);
+            const [showForm, setShowForm] = useState(false);
+            const [scannedData, setScannedData] = useState(null);
+            const [editingItem, setEditingItem] = useState(undefined);
+            const [searchQuery, setSearchQuery] = useState('');
+            const [toast, setToast] = useState(null);
+
+            useEffect(() => {
+                setItems(getInventory());
+            }, []);
+
+            const showToast = (msg, type = 'success') => {
+                setToast({ msg, type });
+                setTimeout(() => setToast(null), 3000);
+            };
+
+            const handleScanSuccess = async (code) => {
+                setShowScanner(false);
+                const existing = getItemByBarcode(code);
+                if (existing) {
+                    showToast(`Actualizando stock...`, 'info');
+                    await updateItemStock(code, 1);
+                    setItems(getInventory());
+                    showToast(`Stock actualizado en Sheets`, 'success');
+                } else {
+                    setScannedData({ barcode: code });
+                    setEditingItem(undefined);
+                    setShowForm(true);
+                    showToast('Código detectado', 'info');
+                }
+            };
+
+            const handleAiDataFound = async (data) => {
+                setShowScanner(false);
+                if (data.barcode) {
+                    const existing = getItemByBarcode(data.barcode);
+                    if (existing) {
+                        showToast(`Actualizando stock...`, 'info');
+                        await updateItemStock(data.barcode, 1);
+                        setItems(getInventory());
+                        showToast(`Stock actualizado en Sheets`, 'success');
+                        return;
+                    }
+                }
+                setScannedData(data);
+                setEditingItem(undefined);
+                setShowForm(true);
+                showToast('Datos detectados por IA', 'success');
+            };
+
+            const handleSaveItem = async (item) => {
+                await addOrUpdateItem(item);
+                setItems(getInventory());
+                setShowForm(false);
+                setEditingItem(undefined);
+                setScannedData(null);
+                showToast('Guardado en Google Sheets', 'success');
+            };
+
+            const handleManualAdd = () => {
+                setScannedData({ barcode: '' });
+                setEditingItem(undefined);
+                setShowForm(true);
+            };
+
+            const filteredItems = items.filter(i => 
+                i.brand.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                i.model.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                i.barcode.includes(searchQuery)
+            );
+
+            return (
+                <div className="min-h-screen bg-gray-50 font-sans text-gray-900 pb-20">
+                    <header className="bg-white sticky top-0 z-30 shadow-sm border-b border-gray-200">
+                        <div className="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
+                            <div className="flex items-center gap-2">
+                                <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center text-white"><Package size={20} /></div>
+                                <h1 className="text-xl font-bold tracking-tight text-gray-800">Control de Stock</h1>
+                            </div>
+                            <div className="flex gap-2">
+                                {APPS_SCRIPT_URL ? <Cloud size={16} className="text-green-500" /> : <CloudOff size={16} className="text-gray-300" />}
+                                <a href={SHEETS_URL} target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-green-700 bg-green-50 px-3 py-1.5 rounded-full border border-green-200 flex items-center gap-1 hover:bg-green-100">
+                                    <Sheet size={14} /> Sheets <ExternalLink size={10} />
+                                </a>
+                            </div>
+                        </div>
+                    </header>
+                    <main className="max-w-4xl mx-auto px-4 pt-6">
+                        {!APPS_SCRIPT_URL && (
+                            <div className="bg-orange-50 border border-orange-200 text-orange-800 text-sm p-4 rounded-xl mb-6">
+                                <strong>⚠️ Configuración Pendiente:</strong> Para guardar en Google Sheets, debes crear el Script y pegar la URL en el código (variable <code>APPS_SCRIPT_URL</code>).
+                            </div>
+                        )}
+                        <div className="grid grid-cols-2 gap-4 mb-6">
+                            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                                <span className="text-sm text-gray-500 block mb-1">Productos</span>
+                                <span className="text-3xl font-bold text-gray-900">{items.length}</span>
+                            </div>
+                            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                                <span className="text-sm text-gray-500 block mb-1">Stock Total</span>
+                                <span className="text-3xl font-bold text-gray-900">{items.reduce((acc, curr) => acc + curr.stock, 0)}</span>
+                            </div>
+                        </div>
+                        <div className="relative mb-6">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                            <input type="text" placeholder="Buscar..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none shadow-sm" />
+                        </div>
+                        <div className="space-y-3">
+                            {filteredItems.map(item => (
+                                <div key={item.barcode} onClick={() => { setScannedData({ barcode: item.barcode }); setEditingItem(item); setShowForm(true); }} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-all cursor-pointer flex justify-between items-center">
+                                    <div>
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <span className="font-bold text-gray-900">{item.brand}</span>
+                                            <span className="text-gray-600">{item.model}</span>
+                                        </div>
+                                        <div className="text-xs text-gray-500 space-x-2">
+                                            <span className="bg-gray-100 px-2 py-0.5 rounded">{item.location}</span>
+                                            <span className="bg-gray-100 px-2 py-0.5 rounded">{item.installType}</span>
+                                        </div>
+                                        <div className="text-[10px] text-gray-400 font-mono mt-1">{item.barcode}</div>
+                                    </div>
+                                    <div className="flex flex-col items-end">
+                                        <span className="text-2xl font-bold text-brand-600">{item.stock}</span>
+                                        <span className="text-xs text-gray-400">stock</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </main>
+                    <div className="fixed bottom-6 right-6 flex flex-col gap-3">
+                        <button onClick={handleManualAdd} className="bg-white text-gray-700 p-4 rounded-full shadow-lg border border-gray-200 hover:bg-gray-50 transition-all active:scale-95"><Plus size={24} /></button>
+                        <button onClick={() => setShowScanner(true)} className="bg-brand-600 text-white p-4 rounded-full shadow-xl shadow-brand-500/30 hover:bg-brand-700 transition-all active:scale-95"><Scan size={24} /></button>
+                    </div>
+                    {showScanner && <Scanner onScanSuccess={handleScanSuccess} onAiDataFound={handleAiDataFound} onClose={() => setShowScanner(false)} />}
+                    {showForm && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onCancel={() => setShowForm(false)} />}
+                    {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full shadow-xl text-white font-medium text-sm transition-all animate-bounce ${toast.type === 'success' ? 'bg-gray-900' : 'bg-brand-600'}`}>{toast.msg}</div>}
+                </div>
+            );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
