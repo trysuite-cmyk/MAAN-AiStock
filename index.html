@@ -537,6 +537,8 @@
             const [editingItem, setEditingItem] = useState(undefined);
             const [searchQuery, setSearchQuery] = useState('');
             const [toast, setToast] = useState(null);
+            const [isAnalyzingPhoto, setIsAnalyzingPhoto] = useState(false);
+            const photoInputRef = useRef(null);
 
             useEffect(() => {
                 setItems(getInventory());
@@ -579,6 +581,29 @@
                 setEditingItem(undefined);
                 setShowForm(true);
                 showToast('Datos detectados por IA', 'success');
+            };
+
+            const handlePhotoUpload = async (e) => {
+                if (e.target.files.length === 0) return;
+                
+                const imageFile = e.target.files[0];
+                setIsAnalyzingPhoto(true);
+                
+                try {
+                    const aiData = await analyzeImageForProduct(imageFile);
+                    if (aiData) {
+                        const finalBarcode = aiData.barcode || `AUTO-${Date.now().toString().slice(-6)}`;
+                        handleAiDataFound({ ...aiData, barcode: finalBarcode });
+                    } else {
+                        showToast("No se pudo identificar el producto", "error");
+                    }
+                } catch (error) {
+                    console.error(error);
+                    showToast("Error al analizar la imagen", "error");
+                } finally {
+                    setIsAnalyzingPhoto(false);
+                    if (photoInputRef.current) photoInputRef.current.value = '';
+                }
             };
 
             const handleSaveItem = async (item) => {
@@ -660,10 +685,26 @@
                             ))}
                         </div>
                     </main>
+
+                    {/* Loading Overlay para Foto Directa */}
+                    {isAnalyzingPhoto && (
+                        <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center text-white backdrop-blur-md">
+                            <Sparkles size={48} className="text-purple-400 mb-4 animate-spin-slow" />
+                            <p className="text-xl font-bold">Analizando con IA...</p>
+                            <p className="text-sm text-gray-400 mt-2">Identificando producto...</p>
+                        </div>
+                    )}
+
                     <div className="fixed bottom-6 right-6 flex flex-col gap-3">
+                        <button onClick={() => photoInputRef.current?.click()} className="bg-white text-purple-600 p-4 rounded-full shadow-lg border border-purple-100 hover:bg-purple-50 transition-all active:scale-95 flex items-center justify-center">
+                            <Sparkles size={24} />
+                        </button>
                         <button onClick={handleManualAdd} className="bg-white text-gray-700 p-4 rounded-full shadow-lg border border-gray-200 hover:bg-gray-50 transition-all active:scale-95"><Plus size={24} /></button>
                         <button onClick={() => setShowScanner(true)} className="bg-brand-600 text-white p-4 rounded-full shadow-xl shadow-brand-500/30 hover:bg-brand-700 transition-all active:scale-95"><Scan size={24} /></button>
                     </div>
+
+                    <input type="file" ref={photoInputRef} className="hidden" accept="image/*" capture="environment" onChange={handlePhotoUpload} />
+
                     {showScanner && <Scanner onScanSuccess={handleScanSuccess} onAiDataFound={handleAiDataFound} onClose={() => setShowScanner(false)} />}
                     {showForm && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onCancel={() => setShowForm(false)} />}
                     {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-full shadow-xl text-white font-medium text-sm transition-all animate-bounce ${toast.type === 'success' ? 'bg-gray-900' : 'bg-brand-600'}`}>{toast.msg}</div>}
