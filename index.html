@@ -77,7 +77,10 @@
         const SHEETS_URL = "https://docs.google.com/spreadsheets/d/11X8ZnPzmpA-gDXyHNYDc5yyjm8ztSzzm4IJsAvgw-ho/edit?gid=0#gid=0";
         const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwoExn-lRAVpyPFzT7xnx88l31T-DBi7eSKLW1Ibf-Cj7uIsbEhDknv3NeLz_rpnTU1/exec"; 
         const STORAGE_KEY = 'inventario_data_v4';
-        const API_KEY = "AIzaSyB3Oy5Yyqxxxtsx-mu6LgfEUmTqUaepyEY";
+        
+        // --- IMPORTANTE: Reemplaza esto con tu nueva API Key de Google AI Studio ---
+        // La anterior fue bloqueada por Google por haber sido expuesta públicamente.
+        const API_KEY = "AIzaSyCGQy1CU8k7c6o-E6rXzPjGXFXL-53d6Mg";
 
         // --- SERVICIOS ---
         
@@ -266,6 +269,7 @@
 
         const suggestProductDetails = async (brand, model) => {
             try {
+                if (API_KEY.includes("PON_TU")) return null;
                 const prompt = `Actúa como experto en ferretería. Sugiere instalación, ubicación y etiquetas para: Marca "${brand}", Modelo "${model}". JSON: {installType, location, details, tags: []}`;
                 const response = await ai.models.generateContent({
                     model: 'gemini-2.5-flash',
@@ -403,6 +407,12 @@
 
             const handleAiSuggest = async () => {
                 if (!brand || !model) return;
+                
+                if (API_KEY.includes("PON_TU")) {
+                     alert("⚠️ Falta API Key. Edita el código index.html y agrega tu clave.");
+                     return;
+                }
+
                 setIsAiLoading(true);
                 const suggestion = await suggestProductDetails(brand, model);
                 setIsAiLoading(false);
@@ -644,6 +654,13 @@
 
             const handlePhotoUpload = async (e) => {
                 if (e.target.files.length === 0) return;
+                
+                // Validación para evitar llamadas a la API si no hay Key
+                if (API_KEY.includes("PON_TU")) {
+                     showToast("⚠️ Falta API Key. Edita el código index.html.", "error");
+                     return;
+                }
+
                 const imageFile = e.target.files[0];
                 setIsAnalyzingPhoto(true);
                 try {
@@ -667,8 +684,14 @@
                     }
                 } catch (error) {
                     console.error("Detalle del error:", error);
-                    // Mostramos el mensaje de error real en el toast para mejor feedback
-                    showToast(`Error: ${error.message || 'Ver consola'}`, "error");
+                    let msg = error.message || 'Error desconocido';
+                    
+                    // Manejo específico del error de Key Bloqueada
+                    if (msg.includes('leaked') || msg.includes('403') || msg.includes('API key')) {
+                        msg = '⛔ API Key bloqueada o inválida. Reemplázala en el código.';
+                    }
+                    
+                    showToast(msg, "error");
                 } finally {
                     setIsAnalyzingPhoto(false);
                     if (photoInputRef.current) photoInputRef.current.value = '';
