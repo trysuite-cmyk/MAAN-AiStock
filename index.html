@@ -78,8 +78,11 @@
         const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwoExn-lRAVpyPFzT7xnx88l31T-DBi7eSKLW1Ibf-Cj7uIsbEhDknv3NeLz_rpnTU1/exec"; 
         const STORAGE_KEY = 'inventario_data_v4';
         
-        // --- IMPORTANTE: Reemplaza esto con tu nueva API Key de Google AI Studio ---
-        // La anterior fue bloqueada por Google por haber sido expuesta públicamente.
+        // --- CONFIGURACIÓN DE API KEY ---
+        // Para publicar la App: 
+        // 1. Pega tu API Key de Google AI Studio abajo.
+        // 2. IMPORTANTE: En la consola de Google Cloud, restringe esta Key a tu dominio web (HTTP Referrer) 
+        //    para evitar que otros la usen si inspeccionan el código.
         const API_KEY = "AIzaSyCGQy1CU8k7c6o-E6rXzPjGXFXL-53d6Mg";
 
         // --- SERVICIOS ---
@@ -223,8 +226,6 @@
                 }
                 `;
 
-                // Usamos literales de cadena para los tipos para evitar errores de importación de 'Type'
-                // y relajamos la validación eliminando 'required'
                 const schema = {
                     type: 'OBJECT',
                     properties: {
@@ -256,7 +257,6 @@
                 let text = response.text;
                 if (!text) return null;
                 
-                // Limpieza extra por si el modelo devuelve markdown
                 text = text.replace(/```json/g, '').replace(/```/g, '').trim();
                 
                 return JSON.parse(text);
@@ -281,6 +281,31 @@
         };
 
         // --- COMPONENTES ---
+
+        const ErrorModal = ({ message, onClose }) => (
+            <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full max-h-[85vh] flex flex-col animate-in fade-in zoom-in duration-200">
+                    <div className="flex flex-col items-center text-center">
+                        <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4 shrink-0">
+                            <AlertTriangle className="text-red-600" size={32} />
+                        </div>
+                        <h3 className="text-lg font-bold text-gray-900 mb-2 shrink-0">Error Detectado</h3>
+                        
+                        {/* Area con scroll por si el mensaje es muy largo */}
+                        <div className="overflow-y-auto mb-6 w-full custom-scrollbar max-h-[40vh]">
+                            <p className="text-gray-600 break-words text-sm leading-relaxed whitespace-pre-wrap">{message}</p>
+                        </div>
+                        
+                        <button 
+                            onClick={onClose}
+                            className="bg-gray-900 text-white py-3 px-6 rounded-xl font-bold w-full hover:bg-gray-800 transition-colors shrink-0"
+                        >
+                            Entendido
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
 
         const SelectionModal = ({ mode, onScan, onPhoto, onClose }) => {
             const isOut = mode === 'out';
@@ -335,7 +360,7 @@
                 
                 if (isFileOrContent) {
                     setUseLocalFile(true); 
-                    setPermissionError("MODO LOCAL");
+                    setPermissionError("MODO LOCAL: La cámara no funciona en archivos locales (file://).");
                     return;
                 }
 
@@ -354,7 +379,7 @@
                         );
                         if (isMounted) setCameraReady(true);
                     } catch (err) {
-                        if (isMounted) setPermissionError("Error de cámara o permisos.");
+                        if (isMounted) setPermissionError("No se pudo acceder a la cámara. Verifica los permisos o usa el modo 'Foto'.");
                     }
                 };
                 startCamera();
@@ -371,7 +396,7 @@
                          {permissionError ? (
                             <div className="text-center text-white px-6">
                                 <AlertTriangle className="mx-auto text-yellow-500 mb-4" size={48} />
-                                <p className="mb-6">{permissionError}. Usa el modo foto.</p>
+                                <p className="mb-6">{permissionError}</p>
                                 <button onClick={() => fileInputRef.current?.click()} className="bg-brand-600 text-white py-3 px-6 rounded-xl font-bold flex items-center gap-2 mx-auto">
                                     <Camera size={20} /> Usar Foto
                                 </button>
@@ -409,7 +434,7 @@
                 if (!brand || !model) return;
                 
                 if (API_KEY.includes("PON_TU")) {
-                     alert("⚠️ Falta API Key. Edita el código index.html y agrega tu clave.");
+                     alert("⚠️ Falta API Key. Edita el archivo index.html.");
                      return;
                 }
 
@@ -574,6 +599,7 @@
             const [editingItem, setEditingItem] = useState(undefined);
             const [searchQuery, setSearchQuery] = useState('');
             const [toast, setToast] = useState(null);
+            const [errorMessage, setErrorMessage] = useState(null); // Nuevo estado para errores modales
             const [isAnalyzingPhoto, setIsAnalyzingPhoto] = useState(false);
             const [isSyncing, setIsSyncing] = useState(false);
             const [initialSyncDone, setInitialSyncDone] = useState(false);
@@ -657,7 +683,7 @@
                 
                 // Validación para evitar llamadas a la API si no hay Key
                 if (API_KEY.includes("PON_TU")) {
-                     showToast("⚠️ Falta API Key. Edita el código index.html.", "error");
+                     setErrorMessage("⚠️ Falta API Key. Por favor edita el código fuente index.html y coloca tu clave de Gemini.");
                      return;
                 }
 
@@ -686,12 +712,12 @@
                     console.error("Detalle del error:", error);
                     let msg = error.message || 'Error desconocido';
                     
-                    // Manejo específico del error de Key Bloqueada
-                    if (msg.includes('leaked') || msg.includes('403') || msg.includes('API key')) {
-                        msg = '⛔ API Key bloqueada o inválida. Reemplázala en el código.';
+                    // Aseguramos que los errores graves de API se muestren en el modal centrado
+                    if (msg.includes('leaked') || msg.includes('403') || msg.includes('API key') || msg.includes('permission') || msg.includes('fetch')) {
+                        setErrorMessage(`⛔ Error de API: ${msg}\n\nRevisa que tu API Key sea válida en index.html.`);
+                    } else {
+                        showToast(msg, "error");
                     }
-                    
-                    showToast(msg, "error");
                 } finally {
                     setIsAnalyzingPhoto(false);
                     if (photoInputRef.current) photoInputRef.current.value = '';
@@ -819,11 +845,15 @@
 
                     <input type="file" ref={photoInputRef} className="hidden" accept="image/*" capture="environment" onChange={handlePhotoUpload} />
 
+                    {/* MODAL DE ERROR (Para API Keys y errores graves) */}
+                    {errorMessage && <ErrorModal message={errorMessage} onClose={() => setErrorMessage(null)} />}
+
                     {showActionModal && <SelectionModal mode={actionMode} onScan={triggerScanner} onPhoto={triggerPhoto} onClose={() => setShowActionModal(false)} />}
                     {viewMode === 'scanner' && <Scanner onScanSuccess={handleScanSuccess} onClose={() => setViewMode('list')} />}
                     {viewMode === 'form' && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onDelete={handleDeleteItem} onCancel={() => setViewMode('list')} mode={actionMode} />}
                     
-                    {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl text-white font-medium text-sm transition-all animate-bounce z-50 flex items-center gap-2 ${toast.type === 'error' ? 'bg-red-500' : 'bg-gray-900'}`}>{toast.type === 'success' && <div className="w-2 h-2 rounded-full bg-green-400"></div>}{toast.msg}</div>}
+                    {/* TOAST (Para notificaciones rápidas, con estilo mejorado) */}
+                    {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl text-white font-medium text-sm transition-all animate-bounce z-50 flex items-center gap-2 max-w-[90vw] text-center ${toast.type === 'error' ? 'bg-red-500' : 'bg-gray-900'}`}>{toast.type === 'success' && <div className="w-2 h-2 rounded-full bg-green-400 shrink-0"></div>}{toast.msg}</div>}
                 </div>
             );
         };
