@@ -71,18 +71,23 @@
     <script type="text/babel" data-presets="react" data-type="module">
         import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
-        import { Scan, Plus, Search, Package, Sheet, ExternalLink, X, AlertCircle, Wand2, Save, Loader2, Camera, Image as ImageIcon, Sparkles, Cloud, CloudOff, RefreshCw, AlertTriangle, Minus, Trash2, Tag, Wifi, ArrowUp, ArrowDown, Zap, DollarSign, Calculator } from 'https://esm.sh/lucide-react@0.344.0';
+        import { Scan, Plus, Search, Package, Sheet, ExternalLink, X, AlertCircle, Wand2, Save, Loader2, Camera, Image as ImageIcon, Sparkles, Cloud, CloudOff, RefreshCw, AlertTriangle, Minus, Trash2, Tag, Wifi, ArrowUp, ArrowDown, Zap, DollarSign, Calculator, Key } from 'https://esm.sh/lucide-react@0.344.0';
         import { GoogleGenAI } from 'https://esm.sh/@google/genai';
 
         // --- CONFIGURACIÓN Y CONSTANTES ---
         const SHEETS_URL = "https://docs.google.com/spreadsheets/d/11X8ZnPzmpA-gDXyHNYDc5yyjm8ztSzzm4IJsAvgw-ho/edit?gid=0#gid=0";
         const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxRLjbztNWsxslJ1AJpMAQC-eYootzAxPGAh_fuNTgoT2fMfajNu6DIRoqdg9Y5HLY/exec"; 
         const STORAGE_KEY = 'inventario_data_v4';
+        const API_KEY_STORAGE = 'gemini_api_key';
         
-        // --- CONFIGURACIÓN DE API KEY ---
-        const API_KEY = "AIzaSyCGQy1CU8k7c6o-E6rXzPjGXFXL-53d6Mg";
-
         // --- SERVICIOS ---
+        
+        // Helper para obtener la instancia de IA con la clave guardada
+        const getAiInstance = () => {
+            const key = localStorage.getItem(API_KEY_STORAGE);
+            if (!key) throw new Error("Falta la API Key. Configúrala en el botón de llave.");
+            return new GoogleGenAI({ apiKey: key });
+        };
         
         const syncItemToSheets = async (item, action = 'update') => {
             if (!APPS_SCRIPT_URL) return false;
@@ -181,8 +186,6 @@
             }
         };
 
-        const ai = new GoogleGenAI({ apiKey: API_KEY });
-
         const processImage = async (file, maxWidth = 800, quality = 0.7) => {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -217,6 +220,7 @@
 
         const analyzeImageForProduct = async (file) => {
             try {
+                const ai = getAiInstance();
                 const { data, mimeType } = await processImage(file);
                 const prompt = `
                 Analiza esta imagen de producto (grifería, plomería, hogar).
@@ -272,7 +276,7 @@
 
         const suggestProductDetails = async (brand, model) => {
             try {
-                if (API_KEY.includes("PON_TU")) return null;
+                const ai = getAiInstance();
                 const prompt = `Actúa como experto en ferretería. Sugiere instalación, ubicación y etiquetas para: Marca "${brand}", Modelo "${model}". JSON: {installType, location, details, tags: []}`;
                 const response = await ai.models.generateContent({
                     model: 'gemini-2.5-flash',
@@ -280,12 +284,15 @@
                     config: { responseMimeType: "application/json" }
                 });
                 return JSON.parse(response.text);
-            } catch (e) { return null; }
+            } catch (e) { 
+                console.error(e);
+                return null; 
+            }
         };
 
         const getMercadoLibrePrice = async (query) => {
-             if (API_KEY.includes("PON_TU")) return null;
              try {
+                const ai = getAiInstance();
                 // Usamos Google Search Grounding para buscar el precio en tiempo real
                 const response = await ai.models.generateContent({
                     model: "gemini-2.5-flash",
@@ -305,7 +312,7 @@
                 return match ? parseInt(match[0], 10) : null;
              } catch (e) {
                  console.error("Error buscando precio:", e);
-                 return null;
+                 throw e;
              }
         };
 
@@ -329,6 +336,57 @@
                 </div>
             </div>
         );
+
+        const ApiKeyModal = ({ onClose }) => {
+            const [key, setKey] = useState(localStorage.getItem(API_KEY_STORAGE) || '');
+            
+            const handleSave = () => {
+                if(key.trim().length < 10) {
+                    alert("Por favor ingresa una API Key válida.");
+                    return;
+                }
+                localStorage.setItem(API_KEY_STORAGE, key.trim());
+                onClose();
+            };
+
+            return (
+                <div className="fixed inset-0 z-[70] bg-gray-900/90 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 relative animate-in fade-in zoom-in duration-200">
+                         <div className="flex flex-col items-center mb-6">
+                            <div className="w-14 h-14 bg-brand-100 text-brand-600 rounded-full flex items-center justify-center mb-3">
+                                <Key size={28} />
+                            </div>
+                            <h2 className="text-xl font-bold text-gray-800">Configurar API Key</h2>
+                            <p className="text-sm text-gray-500 text-center mt-1">
+                                Ingresa tu clave de Google Gemini para habilitar las funciones de IA. Se guardará solo en tu dispositivo.
+                            </p>
+                         </div>
+                         
+                         <div className="space-y-4">
+                             <div>
+                                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">API Key</label>
+                                 <input 
+                                    type="text" 
+                                    value={key} 
+                                    onChange={(e) => setKey(e.target.value)} 
+                                    className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none font-mono text-sm" 
+                                    placeholder="AIzaSy..." 
+                                 />
+                             </div>
+                             
+                             <button onClick={handleSave} className="w-full bg-brand-600 text-white py-3 rounded-xl font-bold hover:bg-brand-700 transition-colors shadow-lg shadow-brand-500/30">
+                                 Guardar Configuración
+                             </button>
+                             <div className="text-center">
+                                <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-xs text-brand-600 hover:underline">
+                                    Conseguir API Key gratis en Google AI Studio
+                                </a>
+                             </div>
+                         </div>
+                    </div>
+                </div>
+            );
+        };
 
         const ValuationModal = ({ items, onClose }) => {
             const totalStock = items.reduce((sum, item) => sum + (Number(item.stock) || 0), 0);
@@ -516,7 +574,6 @@
 
             const handleAiSuggest = async () => {
                 if (!brand || !model) return;
-                if (API_KEY.includes("PON_TU")) { alert("⚠️ Falta API Key."); return; }
                 setIsAiLoading(true);
                 const suggestion = await suggestProductDetails(brand, model);
                 setIsAiLoading(false);
@@ -538,12 +595,17 @@
                  }
                  const query = queryParts.join(" ");
                  setIsPriceLoading(true);
-                 const price = await getMercadoLibrePrice(query);
-                 setIsPriceLoading(false);
-                 if (price) {
-                     setMlPrice(price);
-                 } else {
-                     alert("No se pudo determinar un precio automático.");
+                 try {
+                     const price = await getMercadoLibrePrice(query);
+                     if (price) {
+                         setMlPrice(price);
+                     } else {
+                         alert("No se pudo determinar un precio automático.");
+                     }
+                 } catch (e) {
+                     alert("Error buscando precio: " + e.message);
+                 } finally {
+                     setIsPriceLoading(false);
                  }
             };
 
@@ -690,6 +752,7 @@
             const [actionMode, setActionMode] = useState('view');
             const [showActionModal, setShowActionModal] = useState(false);
             const [showValuationModal, setShowValuationModal] = useState(false);
+            const [showApiKeyModal, setShowApiKeyModal] = useState(false);
             const [items, setItems] = useState([]);
             const [scannedData, setScannedData] = useState(null);
             const [editingItem, setEditingItem] = useState(undefined);
@@ -706,6 +769,13 @@
             useEffect(() => {
                 const localData = getInventory();
                 setItems(localData);
+
+                // Verificar si existe API Key
+                const existingKey = localStorage.getItem(API_KEY_STORAGE);
+                if (!existingKey) {
+                    setShowApiKeyModal(true);
+                }
+
                 const autoSync = async () => {
                     if (APPS_SCRIPT_URL) {
                         setIsSyncing(true);
@@ -817,7 +887,6 @@
 
             const handlePhotoUpload = async (e) => {
                 if (e.target.files.length === 0) return;
-                if (API_KEY.includes("PON_TU")) { setErrorMessage("⚠️ Falta API Key."); return; }
                 const imageFile = e.target.files[0];
                 setIsAnalyzingPhoto(true);
                 try {
@@ -892,6 +961,9 @@
                                 <h1 className="text-xl font-bold tracking-tight text-gray-800">Control de Stock</h1>
                             </div>
                             <div className="flex gap-2 items-center">
+                                <button onClick={() => setShowApiKeyModal(true)} className="p-2 text-brand-600 bg-brand-50 rounded-full hover:bg-brand-100 transition-colors">
+                                    <Key size={20} />
+                                </button>
                                 <button onClick={() => setShowValuationModal(true)} className="p-2 text-emerald-600 bg-emerald-50 rounded-full hover:bg-emerald-100 transition-colors">
                                     <DollarSign size={20} />
                                 </button>
@@ -950,6 +1022,7 @@
                     {errorMessage && <ErrorModal message={errorMessage} onClose={() => setErrorMessage(null)} />}
                     {showActionModal && <SelectionModal mode={actionMode} onScan={triggerScanner} onPhoto={triggerPhoto} onClose={() => setShowActionModal(false)} />}
                     {showValuationModal && <ValuationModal items={items} onClose={() => setShowValuationModal(false)} />}
+                    {showApiKeyModal && <ApiKeyModal onClose={() => setShowApiKeyModal(false)} />}
                     {viewMode === 'scanner' && <Scanner onScanSuccess={handleScanSuccess} onClose={() => setViewMode('list')} mode={actionMode} />}
                     {viewMode === 'form' && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onDelete={handleDeleteItem} onCancel={() => setViewMode('list')} mode={actionMode} />}
                     {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl text-white font-medium text-sm transition-all animate-bounce z-50 flex items-center gap-2 max-w-[90vw] text-center ${toast.type === 'error' ? 'bg-red-500' : 'bg-gray-900'}`}>{toast.type === 'success' && <div className="w-2 h-2 rounded-full bg-green-400 shrink-0"></div>}{toast.msg}</div>}
