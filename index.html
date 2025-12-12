@@ -71,19 +71,15 @@
     <script type="text/babel" data-presets="react" data-type="module">
         import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
-        import { Scan, Plus, Search, Package, Sheet, ExternalLink, X, AlertCircle, Wand2, Save, Loader2, Camera, Image as ImageIcon, Sparkles, Cloud, CloudOff, RefreshCw, AlertTriangle, Minus, Trash2, Tag, Wifi, ArrowUp, ArrowDown, Zap } from 'https://esm.sh/lucide-react@0.344.0';
+        import { Scan, Plus, Search, Package, Sheet, ExternalLink, X, AlertCircle, Wand2, Save, Loader2, Camera, Image as ImageIcon, Sparkles, Cloud, CloudOff, RefreshCw, AlertTriangle, Minus, Trash2, Tag, Wifi, ArrowUp, ArrowDown, Zap, DollarSign, Calculator } from 'https://esm.sh/lucide-react@0.344.0';
         import { GoogleGenAI } from 'https://esm.sh/@google/genai';
 
         // --- CONFIGURACIÓN Y CONSTANTES ---
         const SHEETS_URL = "https://docs.google.com/spreadsheets/d/11X8ZnPzmpA-gDXyHNYDc5yyjm8ztSzzm4IJsAvgw-ho/edit?gid=0#gid=0";
-        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz1mMHm8cOHuZES21bes3-hR8huQ5Wso9b1DJousRjKG_XOxYUDd87pM5Uuid5AfU8Z/exec"; 
+        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxRLjbztNWsxslJ1AJpMAQC-eYootzAxPGAh_fuNTgoT2fMfajNu6DIRoqdg9Y5HLY/exec"; 
         const STORAGE_KEY = 'inventario_data_v4';
         
         // --- CONFIGURACIÓN DE API KEY ---
-        // Para publicar la App: 
-        // 1. Pega tu API Key de Google AI Studio abajo.
-        // 2. IMPORTANTE: En la consola de Google Cloud, restringe esta Key a tu dominio web (HTTP Referrer) 
-        //    para evitar que otros la usen si inspeccionan el código.
         const API_KEY = "AIzaSyCGQy1CU8k7c6o-E6rXzPjGXFXL-53d6Mg";
 
         // --- SERVICIOS ---
@@ -93,7 +89,8 @@
             try {
                 const safeItem = {
                     ...item,
-                    stock: Number(item.stock), // Aseguramos que se envíe un número
+                    stock: Number(item.stock), 
+                    mlPrice: Number(item.mlPrice || 0), // Asegurar envío del precio
                     tags: Array.isArray(item.tags) ? item.tags : []
                 };
                 const payload = {
@@ -103,7 +100,6 @@
                 };
                 console.log("Sincronizando:", payload);
                 
-                // Usamos keepalive para que la petición sobreviva si la app se cierra o cambia de estado
                 await fetch(APPS_SCRIPT_URL, {
                     method: 'POST',
                     mode: 'no-cors', 
@@ -163,20 +159,20 @@
             const index = items.findIndex(item => item.barcode === newItem.barcode);
             
             if (index !== -1) {
-                // Fusión robusta: newItem tiene prioridad absoluta sobre items[index]
                 items[index] = { 
                     ...items[index], 
                     ...newItem, 
-                    stock: Number(newItem.stock), // Forzamos número
+                    stock: Number(newItem.stock),
+                    mlPrice: Number(newItem.mlPrice || 0),
                     lastUpdated: new Date().toISOString() 
                 };
                 saveInventory(items);
-                // Enviamos items[index] que ya tiene el stock fusionado y correcto
                 await syncItemToSheets(items[index], 'update');
             } else {
                 const itemToSave = { 
                     ...newItem, 
                     stock: Number(newItem.stock),
+                    mlPrice: Number(newItem.mlPrice || 0),
                     lastUpdated: new Date().toISOString() 
                 };
                 items.push(itemToSave);
@@ -287,6 +283,32 @@
             } catch (e) { return null; }
         };
 
+        const getMercadoLibrePrice = async (query) => {
+             if (API_KEY.includes("PON_TU")) return null;
+             try {
+                // Usamos Google Search Grounding para buscar el precio en tiempo real
+                const response = await ai.models.generateContent({
+                    model: "gemini-2.5-flash",
+                    contents: `Busca en mercadolibre.com.ar el precio de venta más bajo para el producto nuevo: "${query}". 
+                    Ignora productos usados.
+                    Tu respuesta debe contener SOLO el número del precio estimado (sin signos de moneda, ni puntos de mil, solo dígitos). 
+                    Si no encuentras un precio exacto, estima basado en los resultados.
+                    Ejemplo de respuesta ideal: 15400`,
+                    config: {
+                        tools: [{ googleSearch: {} }]
+                    }
+                });
+                
+                const text = response.text;
+                // Extraemos el primer número que parezca un precio
+                const match = text.match(/(\d+)/); 
+                return match ? parseInt(match[0], 10) : null;
+             } catch (e) {
+                 console.error("Error buscando precio:", e);
+                 return null;
+             }
+        };
+
         // --- COMPONENTES ---
 
         const ErrorModal = ({ message, onClose }) => (
@@ -307,6 +329,57 @@
                 </div>
             </div>
         );
+
+        const ValuationModal = ({ items, onClose }) => {
+            const totalStock = items.reduce((sum, item) => sum + (Number(item.stock) || 0), 0);
+            const totalValue = items.reduce((sum, item) => sum + ((Number(item.stock) || 0) * (Number(item.mlPrice) || 0)), 0);
+            const itemsWithPrice = items.filter(i => i.mlPrice > 0).length;
+            
+            // Formateador de moneda para Argentina
+            const fmt = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 });
+
+            return (
+                <div className="fixed inset-0 z-50 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
+                         <div className="bg-gradient-to-r from-emerald-600 to-emerald-800 p-6 text-white text-center">
+                             <div className="mx-auto bg-white/20 w-16 h-16 rounded-full flex items-center justify-center mb-3 backdrop-blur-sm">
+                                <DollarSign size={32} className="text-white" />
+                             </div>
+                             <h2 className="text-2xl font-bold">Valorización de Stock</h2>
+                             <p className="text-emerald-100 text-sm">Estimación basada en MercadoLibre</p>
+                         </div>
+                         
+                         <div className="p-6 space-y-6">
+                            <div className="text-center">
+                                <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">VALOR TOTAL ESTIMADO</p>
+                                <p className="text-4xl font-black text-gray-800 tracking-tight">{fmt.format(totalValue)}</p>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 text-center">
+                                    <p className="text-gray-500 text-xs font-bold uppercase">Unidades</p>
+                                    <p className="text-xl font-bold text-gray-800">{totalStock}</p>
+                                </div>
+                                <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 text-center">
+                                    <p className="text-gray-500 text-xs font-bold uppercase">Prod. con Precio</p>
+                                    <p className="text-xl font-bold text-gray-800">{itemsWithPrice} <span className="text-gray-400 text-sm">/ {items.length}</span></p>
+                                </div>
+                            </div>
+
+                            <p className="text-xs text-gray-400 text-center italic leading-relaxed">
+                                * Los precios son referencias automáticas obtenidas de MercadoLibre y pueden variar.
+                            </p>
+                         </div>
+
+                         <div className="p-4 bg-gray-50 border-t">
+                             <button onClick={onClose} className="w-full bg-white border border-gray-300 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-100 transition-colors">
+                                 Cerrar
+                             </button>
+                         </div>
+                    </div>
+                </div>
+            );
+        };
 
         const SelectionModal = ({ mode, onScan, onPhoto, onClose }) => {
             const isOut = mode === 'out';
@@ -432,9 +505,11 @@
             const [installType, setInstallType] = useState(existingItem?.installType || initialData?.installType || '');
             const [details, setDetails] = useState(existingItem?.details || initialData?.details || '');
             const [tags, setTags] = useState(existingItem?.tags || initialData?.tags || []);
+            const [mlPrice, setMlPrice] = useState(existingItem?.mlPrice || 0);
             const [currentTag, setCurrentTag] = useState('');
             const [stock, setStock] = useState(existingItem?.stock || 0);
             const [isAiLoading, setIsAiLoading] = useState(false);
+            const [isPriceLoading, setIsPriceLoading] = useState(false);
             const [isSaving, setIsSaving] = useState(false);
 
             const formTitle = (brand && model) ? `${brand} ${model}` : (existingItem ? 'Producto Sin Nombre' : 'Nuevo Producto');
@@ -455,6 +530,23 @@
                 }
             };
 
+            const handlePriceCheck = async () => {
+                 const queryParts = [brand, model, details, barcode].filter(Boolean);
+                 if (queryParts.length < 2) {
+                     alert("Se necesita al menos Marca y Modelo para buscar el precio.");
+                     return;
+                 }
+                 const query = queryParts.join(" ");
+                 setIsPriceLoading(true);
+                 const price = await getMercadoLibrePrice(query);
+                 setIsPriceLoading(false);
+                 if (price) {
+                     setMlPrice(price);
+                 } else {
+                     alert("No se pudo determinar un precio automático.");
+                 }
+            };
+
             const handleTagKeyDown = (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
@@ -472,7 +564,7 @@
                 e.preventDefault();
                 setIsSaving(true);
                 await onSave({
-                    id: barcode, barcode, brand, model, color, location, installType, stock: Number(stock), details, tags,
+                    id: barcode, barcode, brand, model, color, location, installType, stock: Number(stock), details, tags, mlPrice: Number(mlPrice),
                     lastUpdated: new Date().toISOString()
                 });
                 setIsSaving(false);
@@ -481,6 +573,9 @@
             const handleDelete = async () => {
                 if(confirm("¿Eliminar producto?")) { await onDelete(barcode); }
             };
+
+            // Valor total de este item
+            const itemTotalValue = (Number(stock) || 0) * (Number(mlPrice) || 0);
 
             return (
                 <div className="fixed inset-0 z-40 bg-gray-900/50 backdrop-blur-sm flex justify-center items-end sm:items-center p-0 sm:p-4">
@@ -531,6 +626,23 @@
                                 </button>
                             </div>
                             
+                            {/* SECCION PRECIO ML */}
+                            <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3">
+                                <label className="block text-xs font-bold text-emerald-700 uppercase tracking-wider mb-1">Precio Referencia (MercadoLibre)</label>
+                                <div className="flex gap-2">
+                                    <div className="relative flex-1">
+                                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 font-bold">$</div>
+                                        <input type="number" value={mlPrice} onChange={(e) => setMlPrice(Number(e.target.value))} className="w-full pl-6 pr-3 py-2 border border-emerald-200 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none bg-white text-emerald-900 font-bold" placeholder="0" />
+                                    </div>
+                                    <button type="button" onClick={handlePriceCheck} disabled={isPriceLoading} className="bg-emerald-600 text-white px-3 rounded-lg hover:bg-emerald-700 transition-colors flex items-center gap-1 disabled:opacity-70">
+                                        {isPriceLoading ? <Loader2 className="animate-spin" size={18} /> : <Search size={18} />}
+                                    </button>
+                                </div>
+                                <div className="mt-2 text-right text-xs font-bold text-emerald-600">
+                                    Valor Total: ${new Intl.NumberFormat('es-AR').format(itemTotalValue)}
+                                </div>
+                            </div>
+
                             <div>
                                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Etiquetas</label>
                                 <div className="p-2 border border-gray-200 rounded-xl bg-white focus-within:ring-2 focus-within:ring-brand-500 transition-all flex flex-wrap gap-2 min-h-[50px]">
@@ -577,6 +689,7 @@
             const [viewMode, setViewMode] = useState('list');
             const [actionMode, setActionMode] = useState('view');
             const [showActionModal, setShowActionModal] = useState(false);
+            const [showValuationModal, setShowValuationModal] = useState(false);
             const [items, setItems] = useState([]);
             const [scannedData, setScannedData] = useState(null);
             const [editingItem, setEditingItem] = useState(undefined);
@@ -659,7 +772,6 @@
                 
                 if ((actionMode === 'in' || actionMode === 'out') && existing) {
                     const change = actionMode === 'in' ? 1 : -1;
-                    // FIX: Aseguramos que sea número con parseInt base 10
                     const currentStock = parseInt(existing.stock || 0, 10);
                     const newStock = Math.max(0, currentStock + change);
                     
@@ -780,6 +892,9 @@
                                 <h1 className="text-xl font-bold tracking-tight text-gray-800">Control de Stock</h1>
                             </div>
                             <div className="flex gap-2 items-center">
+                                <button onClick={() => setShowValuationModal(true)} className="p-2 text-emerald-600 bg-emerald-50 rounded-full hover:bg-emerald-100 transition-colors">
+                                    <DollarSign size={20} />
+                                </button>
                                 <button onClick={handleCloudRefresh} disabled={isSyncing} className={`p-2 rounded-full text-gray-500 hover:bg-gray-100 transition-all ${isSyncing ? 'animate-spin' : ''}`}>
                                     <RefreshCw size={20} />
                                 </button>
@@ -808,9 +923,10 @@
                                                         {item.tags && item.tags.slice(0, 3).map(t => (<span key={t} className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{t}</span>))}
                                                     </div>
                                                 </div>
-                                                <div className="text-center px-2">
+                                                <div className="text-center px-2 flex flex-col items-end">
                                                     <span className="block text-2xl font-bold text-gray-800">{item.stock}</span>
                                                     <span className="text-[10px] text-gray-400 uppercase font-bold">Stock</span>
+                                                    {item.mlPrice > 0 && <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 px-1 rounded mt-1">${item.mlPrice}</span>}
                                                 </div>
                                             </div>
                                         ))}
@@ -833,6 +949,7 @@
                     <input type="file" ref={photoInputRef} className="hidden" accept="image/*" capture="environment" onChange={handlePhotoUpload} />
                     {errorMessage && <ErrorModal message={errorMessage} onClose={() => setErrorMessage(null)} />}
                     {showActionModal && <SelectionModal mode={actionMode} onScan={triggerScanner} onPhoto={triggerPhoto} onClose={() => setShowActionModal(false)} />}
+                    {showValuationModal && <ValuationModal items={items} onClose={() => setShowValuationModal(false)} />}
                     {viewMode === 'scanner' && <Scanner onScanSuccess={handleScanSuccess} onClose={() => setViewMode('list')} mode={actionMode} />}
                     {viewMode === 'form' && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onDelete={handleDeleteItem} onCancel={() => setViewMode('list')} mode={actionMode} />}
                     {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl text-white font-medium text-sm transition-all animate-bounce z-50 flex items-center gap-2 max-w-[90vw] text-center ${toast.type === 'error' ? 'bg-red-500' : 'bg-gray-900'}`}>{toast.type === 'success' && <div className="w-2 h-2 rounded-full bg-green-400 shrink-0"></div>}{toast.msg}</div>}
