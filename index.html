@@ -71,7 +71,7 @@
         import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
         import { Scan, Plus, Search, Package, Sheet, ExternalLink, X, AlertCircle, Wand2, Save, Loader2, Camera, Image as ImageIcon, Sparkles, Cloud, CloudOff, RefreshCw, AlertTriangle, Minus, Trash2, Tag, Wifi, ArrowUp, ArrowDown } from 'https://esm.sh/lucide-react@0.344.0';
-        import { GoogleGenAI, Type } from 'https://esm.sh/@google/genai';
+        import { GoogleGenAI } from 'https://esm.sh/@google/genai';
 
         // --- CONFIGURACIÓN Y CONSTANTES ---
         const SHEETS_URL = "https://docs.google.com/spreadsheets/d/11X8ZnPzmpA-gDXyHNYDc5yyjm8ztSzzm4IJsAvgw-ho/edit?gid=0#gid=0";
@@ -220,6 +220,22 @@
                 }
                 `;
 
+                // Usamos literales de cadena para los tipos para evitar errores de importación de 'Type'
+                // y relajamos la validación eliminando 'required'
+                const schema = {
+                    type: 'OBJECT',
+                    properties: {
+                        barcode: { type: 'STRING' },
+                        brand: { type: 'STRING' },
+                        model: { type: 'STRING' },
+                        color: { type: 'STRING' },
+                        location: { type: 'STRING' },
+                        installType: { type: 'STRING' },
+                        details: { type: 'STRING' },
+                        tags: { type: 'ARRAY', items: { type: 'STRING' } }
+                    }
+                };
+
                 const response = await ai.models.generateContent({
                     model: 'gemini-2.5-flash',
                     contents: {
@@ -230,20 +246,7 @@
                     },
                     config: {
                         responseMimeType: "application/json",
-                        responseSchema: {
-                            type: Type.OBJECT,
-                            properties: {
-                                barcode: { type: Type.STRING },
-                                brand: { type: Type.STRING },
-                                model: { type: Type.STRING },
-                                color: { type: Type.STRING },
-                                location: { type: Type.STRING },
-                                installType: { type: Type.STRING },
-                                details: { type: Type.STRING },
-                                tags: { type: Type.ARRAY, items: { type: Type.STRING } }
-                            },
-                            required: ["brand", "model"]
-                        }
+                        responseSchema: schema
                     }
                 });
 
@@ -257,7 +260,6 @@
 
             } catch (error) {
                 console.error("Error analizando imagen con Gemini:", error);
-                // Si es un error de parseo, intentamos devolver un objeto básico parcial si es posible, o re-lanzamos
                 throw error;
             }
         };
@@ -665,7 +667,8 @@
                     }
                 } catch (error) {
                     console.error("Detalle del error:", error);
-                    showToast("Error al analizar la imagen. Ver consola.", "error");
+                    // Mostramos el mensaje de error real en el toast para mejor feedback
+                    showToast(`Error: ${error.message || 'Ver consola'}`, "error");
                 } finally {
                     setIsAnalyzingPhoto(false);
                     if (photoInputRef.current) photoInputRef.current.value = '';
