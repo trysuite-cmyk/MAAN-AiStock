@@ -416,19 +416,34 @@
         const ScanConfirmationModal = ({ data, type, onConfirm, onCancel }) => {
             const isEntry = type === 'in';
             const existing = data.item;
+            const [quantity, setQuantity] = useState(1);
             
+            // Colores basados en el tipo
+            const themeColor = isEntry ? 'green' : 'red';
+            const bgLight = isEntry ? 'bg-green-50' : 'bg-red-50';
+            const textDark = isEntry ? 'text-green-700' : 'text-red-700';
+            const borderLight = isEntry ? 'border-green-100' : 'border-red-100';
+            const btnColor = isEntry ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700';
+            const textColor = isEntry ? 'text-green-600' : 'text-red-600';
+
+            const currentStock = existing ? parseInt(existing.stock || 0) : 0;
+            const finalStock = Math.max(0, currentStock + (isEntry ? quantity : -quantity));
+
             return (
                  <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4 sm:p-0">
                      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel}></div>
                      <div className="relative bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden animate-in slide-in-from-bottom duration-200">
-                        <div className={`p-4 text-center ${isEntry ? 'bg-green-50' : 'bg-red-50'} border-b ${isEntry ? 'border-green-100' : 'border-red-100'}`}>
-                            <h3 className={`text-lg font-bold ${isEntry ? 'text-green-700' : 'text-red-700'} flex items-center justify-center gap-2`}>
+                        {/* Cabecera */}
+                        <div className={`p-4 text-center ${bgLight} border-b ${borderLight}`}>
+                            <h3 className={`text-lg font-bold ${textDark} flex items-center justify-center gap-2`}>
                                 {isEntry ? <ArrowUp size={24} /> : <ArrowDown size={24} />}
                                 {isEntry ? 'Confirmar Entrada' : 'Confirmar Salida'}
                             </h3>
                         </div>
+
                         <div className="p-6 text-center">
-                            <div className="mb-4">
+                            {/* Información del Producto */}
+                            <div className="mb-6">
                                 <p className="text-xs text-gray-400 font-mono mb-1">{data.code}</p>
                                 <h2 className="text-xl font-bold text-gray-800 leading-tight">
                                     {existing ? `${existing.brand} ${existing.model}` : 'Producto Nuevo'}
@@ -436,20 +451,46 @@
                                 {existing && <p className="text-sm text-gray-500 mt-1">{existing.details || 'Sin descripción'}</p>}
                             </div>
                             
-                            <div className="bg-gray-50 rounded-xl p-3 mb-6 inline-block border border-gray-100">
-                                <span className="text-gray-500 text-xs uppercase font-bold mr-2">Stock Actual:</span>
-                                <span className="text-xl font-bold text-gray-800">{existing ? existing.stock : 0}</span>
-                                <span className="mx-2 text-gray-300">→</span>
-                                <span className={`text-xl font-bold ${isEntry ? 'text-green-600' : 'text-red-600'}`}>
-                                    {existing ? Math.max(0, parseInt(existing.stock || 0) + (isEntry ? 1 : -1)) : (isEntry ? 1 : 0)}
-                                </span>
+                            {/* Selector de Cantidad */}
+                            <div className={`rounded-2xl border-2 ${borderLight} ${bgLight} p-4 mb-6`}>
+                                <label className={`block text-center text-xs font-bold uppercase tracking-wider mb-3 ${textDark}`}>
+                                    Cantidad a {isEntry ? 'Ingresar' : 'Retirar'}
+                                </label>
+                                <div className="flex items-center justify-center gap-6">
+                                    <button 
+                                        onClick={() => setQuantity(q => Math.max(1, q - 1))} 
+                                        className="w-14 h-14 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-all text-gray-700"
+                                    >
+                                        <Minus size={28}/>
+                                    </button>
+                                    
+                                    <div className="flex flex-col items-center min-w-[60px]">
+                                        <span className="text-5xl font-bold text-gray-900 leading-none">{quantity}</span>
+                                        <span className="text-[10px] text-gray-400 font-bold uppercase mt-1">Unidades</span>
+                                    </div>
+                                    
+                                    <button 
+                                        onClick={() => setQuantity(q => q + 1)} 
+                                        className="w-14 h-14 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-all text-gray-700"
+                                    >
+                                        <Plus size={28}/>
+                                    </button>
+                                </div>
                             </div>
 
+                            {/* Previsualización del Stock */}
+                            <div className="flex items-center justify-center gap-3 text-sm text-gray-500 mb-6 bg-gray-50 py-2 px-4 rounded-lg inline-flex">
+                                <span>Stock: <strong>{currentStock}</strong></span>
+                                <span className="text-gray-300">→</span>
+                                <span className={`font-bold ${textColor}`}>{finalStock}</span>
+                            </div>
+
+                            {/* Botones de Acción */}
                             <div className="grid grid-cols-2 gap-3">
                                 <button onClick={onCancel} className="py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-bold transition-colors">
                                     Cancelar
                                 </button>
-                                <button onClick={onConfirm} className={`py-3 px-4 text-white rounded-xl font-bold shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2 ${isEntry ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'}`}>
+                                <button onClick={() => onConfirm(quantity)} className={`py-3 px-4 text-white rounded-xl font-bold shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2 ${btnColor}`}>
                                     <CheckCircle size={20} /> Confirmar
                                 </button>
                             </div>
@@ -1018,10 +1059,11 @@
                 scanLockRef.current = false;
             };
 
-            const handleConfirmScan = async () => {
+            const handleConfirmScan = async (quantityInput) => {
                 if (!scanConfirmation) return;
 
                 const { code, item: existing, type } = scanConfirmation;
+                const qty = quantityInput || 1; // Default to 1 if not provided
                 
                 if (!existing) {
                     // Si no existe y estamos en modo confirmar, debería ser IN (porque OUT bloquea antes si no existe, 
@@ -1037,11 +1079,11 @@
                      return;
                 }
 
-                const change = type === 'in' ? 1 : -1;
+                const change = type === 'in' ? qty : -qty;
                 const currentStock = parseInt(existing.stock || 0, 10);
                 const newStock = Math.max(0, currentStock + change);
                 
-                if (currentStock === 0 && change === -1) {
+                if (currentStock === 0 && change < 0) {
                     showToast(`El stock ya es 0 para ${existing.brand}`, 'error');
                 } else {
                     const updatedItem = { 
@@ -1054,7 +1096,7 @@
                     setItems(getInventory()); 
 
                     const typeText = type === 'in' ? 'ENTRADA' : 'SALIDA';
-                    showToast(`${typeText}: ${existing.brand} ${existing.model} (Stock: ${newStock})`, type === 'in' ? 'success' : 'error');
+                    showToast(`${typeText}: ${qty}u - ${existing.brand} (Stock: ${newStock})`, type === 'in' ? 'success' : 'error');
                 }
                 
                 setScanConfirmation(null);
