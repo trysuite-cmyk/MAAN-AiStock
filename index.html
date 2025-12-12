@@ -92,6 +92,52 @@
             if (!key) throw new Error("Falta la API Key. Configúrala en el botón de llave.");
             return new GoogleGenAI({ apiKey: key });
         };
+
+        // --- LÓGICA DE REINTENTOS PARA ERRORES 429 ---
+        const callGeminiWithRetry = async (apiCallFn, maxRetries = 3) => {
+            let retries = 0;
+            let delay = 2000; // Iniciar con 2 segundos
+
+            while (true) {
+                try {
+                    return await apiCallFn();
+                } catch (error) {
+                    const msg = error.toString().toLowerCase();
+                    const isQuotaError = msg.includes("429") || msg.includes("resource_exhausted") || msg.includes("quota");
+                    
+                    if (isQuotaError && retries < maxRetries) {
+                        console.warn(`⚠️ Cuota excedida (429). Reintentando en ${delay/1000}s... (Intento ${retries + 1}/${maxRetries})`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        delay *= 2; // Exponential backoff (2s, 4s, 8s)
+                        retries++;
+                    } else {
+                        throw error;
+                    }
+                }
+            }
+        };
+
+        // --- HELPER PARA MENSAJES DE ERROR LIMPIOS ---
+        const formatGeminiError = (error) => {
+            const raw = error.toString();
+            if (raw.includes("429") || raw.includes("quota") || raw.includes("RESOURCE_EXHAUSTED")) {
+                return "⚠️ El sistema de IA está saturado temporalmente (Límite de cuota gratuito). \n\nPor favor espera unos segundos e intenta nuevamente.";
+            }
+            // Intentar limpiar JSON crudo si aparece
+            if (raw.includes('{"error":')) {
+                try {
+                    // Extraer parte JSON si está mezclada con texto
+                    const jsonPart = raw.match(/\{.*\}/);
+                    if (jsonPart) {
+                        const parsed = JSON.parse(jsonPart[0]);
+                        if (parsed.error && parsed.error.message) {
+                            return "Error de IA: " + parsed.error.message;
+                        }
+                    }
+                } catch(e) {}
+            }
+            return "Error: " + raw.replace('Error:', '').trim();
+        };
         
         const syncItemToSheets = async (item, action = 'update') => {
             if (!APPS_SCRIPT_URL) return false;
@@ -223,116 +269,122 @@
         };
 
         const analyzeImageForProduct = async (file) => {
-            try {
-                const ai = getAiInstance();
-                const { data, mimeType } = await processImage(file);
-                const prompt = `
-                Analiza esta imagen de producto (grifería, plomería, hogar).
-                Identifica el producto y extrae la mayor cantidad de información posible.
-                Si puedes leer el código de barras en la imagen, inclúyelo.
-                Responde estrictamente en formato JSON con la siguiente estructura:
-                {
-                    "barcode": "código numérico o null",
-                    "brand": "Marca visible o sugerida",
-                    "model": "Modelo visible o descripción corta",
-                    "color": "Color o acabado",
-                    "location": "Ubicación sugerida (Cocina, Baño, etc.)",
-                    "installType": "Tipo de instalación (Pared, Mesada, etc.)",
-                    "details": "Descripción breve y características",
-                    "tags": ["etiqueta1", "etiqueta2", "etiqueta3"]
+            return callGeminiWithRetry(async () => {
+                try {
+                    const ai = getAiInstance();
+                    const { data, mimeType } = await processImage(file);
+                    const prompt = `
+                    Analiza esta imagen de producto (grifería, plomería, hogar).
+                    Identifica el producto y extrae la mayor cantidad de información posible.
+                    Si puedes leer el código de barras en la imagen, inclúyelo.
+                    Responde estrictamente en formato JSON con la siguiente estructura:
+                    {
+                        "barcode": "código numérico o null",
+                        "brand": "Marca visible o sugerida",
+                        "model": "Modelo visible o descripción corta",
+                        "color": "Color o acabado",
+                        "location": "Ubicación sugerida (Cocina, Baño, etc.)",
+                        "installType": "Tipo de instalación (Pared, Mesada, etc.)",
+                        "details": "Descripción breve y características",
+                        "tags": ["etiqueta1", "etiqueta2", "etiqueta3"]
+                    }
+                    `;
+                    const schema = {
+                        type: 'OBJECT',
+                        properties: {
+                            barcode: { type: 'STRING' },
+                            brand: { type: 'STRING' },
+                            model: { type: 'STRING' },
+                            color: { type: 'STRING' },
+                            location: { type: 'STRING' },
+                            installType: { type: 'STRING' },
+                            details: { type: 'STRING' },
+                            tags: { type: 'ARRAY', items: { type: 'STRING' } }
+                        }
+                    };
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: {
+                            parts: [
+                                { inlineData: { mimeType: mimeType, data: data } },
+                                { text: prompt }
+                            ]
+                        },
+                        config: {
+                            responseMimeType: "application/json",
+                            responseSchema: schema
+                        }
+                    });
+                    let text = response.text;
+                    if (!text) return null;
+                    text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+                    return JSON.parse(text);
+                } catch (error) {
+                    console.error("Error analizando imagen con Gemini:", error);
+                    throw error;
                 }
-                `;
-                const schema = {
-                    type: 'OBJECT',
-                    properties: {
-                        barcode: { type: 'STRING' },
-                        brand: { type: 'STRING' },
-                        model: { type: 'STRING' },
-                        color: { type: 'STRING' },
-                        location: { type: 'STRING' },
-                        installType: { type: 'STRING' },
-                        details: { type: 'STRING' },
-                        tags: { type: 'ARRAY', items: { type: 'STRING' } }
-                    }
-                };
-                const response = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
-                    contents: {
-                        parts: [
-                            { inlineData: { mimeType: mimeType, data: data } },
-                            { text: prompt }
-                        ]
-                    },
-                    config: {
-                        responseMimeType: "application/json",
-                        responseSchema: schema
-                    }
-                });
-                let text = response.text;
-                if (!text) return null;
-                text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-                return JSON.parse(text);
-            } catch (error) {
-                console.error("Error analizando imagen con Gemini:", error);
-                throw error;
-            }
+            });
         };
 
         const suggestProductDetails = async (brand, model) => {
-            try {
-                const ai = getAiInstance();
-                const prompt = `Actúa como experto en ferretería. Sugiere instalación, ubicación y etiquetas para: Marca "${brand}", Modelo "${model}". JSON: {installType, location, details, tags: []}`;
-                const response = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
-                    contents: prompt,
-                    config: { responseMimeType: "application/json" }
-                });
-                return JSON.parse(response.text);
-            } catch (e) { 
-                console.error(e);
-                return null; 
-            }
+            return callGeminiWithRetry(async () => {
+                try {
+                    const ai = getAiInstance();
+                    const prompt = `Actúa como experto en ferretería. Sugiere instalación, ubicación y etiquetas para: Marca "${brand}", Modelo "${model}". JSON: {installType, location, details, tags: []}`;
+                    const response = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: prompt,
+                        config: { responseMimeType: "application/json" }
+                    });
+                    return JSON.parse(response.text);
+                } catch (e) { 
+                    console.error(e);
+                    return null; 
+                }
+            });
         };
 
         const getMercadoLibrePrice = async (query) => {
-             try {
-                const ai = getAiInstance();
-                // Prompt ingeniería para evitar alucinaciones con cuotas o envíos
-                const prompt = `
-                Actúa como un asistente de compras experto en Argentina.
-                Objetivo: Encontrar el precio de mercado actual en Pesos Argentinos (ARS) para: "${query}".
-                
-                Instrucciones:
-                1. Usa Google Search para buscar este producto ESPECÍFICAMENTE en el sitio 'mercadolibre.com.ar'.
-                2. Busca el precio de un producto NUEVO. Ignora usados.
-                3. CRÍTICO: Debes distinguir el precio total del valor de las "cuotas". NO confundas "12x $5.000" con un precio de $5.000. El precio real sería aprox $60.000.
-                4. Ignora costos de envío.
-                5. Si hay varios resultados, descarta los muy baratos (repuestos/accesorios) y toma un promedio de los precios coherentes del producto principal.
-                6. Tu respuesta final debe ser SOLAMENTE un número entero representando el precio en ARS (sin puntos ni símbolos). Ejemplo: 154000.
-                Si no encuentras nada confiable, responde: 0.
-                `;
+            return callGeminiWithRetry(async () => {
+                 try {
+                    const ai = getAiInstance();
+                    // Prompt ingeniería para evitar alucinaciones con cuotas o envíos
+                    const prompt = `
+                    Actúa como un asistente de compras experto en Argentina.
+                    Objetivo: Encontrar el precio de mercado actual en Pesos Argentinos (ARS) para: "${query}".
+                    
+                    Instrucciones:
+                    1. Usa Google Search para buscar este producto ESPECÍFICAMENTE en el sitio 'mercadolibre.com.ar'.
+                    2. Busca el precio de un producto NUEVO. Ignora usados.
+                    3. CRÍTICO: Debes distinguir el precio total del valor de las "cuotas". NO confundas "12x $5.000" con un precio de $5.000. El precio real sería aprox $60.000.
+                    4. Ignora costos de envío.
+                    5. Si hay varios resultados, descarta los muy baratos (repuestos/accesorios) y toma un promedio de los precios coherentes del producto principal.
+                    6. Tu respuesta final debe ser SOLAMENTE un número entero representando el precio en ARS (sin puntos ni símbolos). Ejemplo: 154000.
+                    Si no encuentras nada confiable, responde: 0.
+                    `;
 
-                const response = await ai.models.generateContent({
-                    model: "gemini-2.5-flash",
-                    contents: prompt,
-                    config: {
-                        tools: [{ googleSearch: {} }]
-                    }
-                });
-                
-                const text = response.text || "";
-                
-                // Limpieza agresiva para encontrar el número más probable
-                // Eliminamos posibles textos de cuotas "12x" o "6 cuotas" antes de buscar números
-                const cleanText = text.replace(/(\d+)\s*(x|cuotas)/gi, ''); 
-                
-                // Buscamos el primer número de al menos 3 dígitos (para evitar "12" cuotas, pero permitir precios bajos reales)
-                const match = cleanText.match(/(\d{3,})/); 
-                return match ? parseInt(match[0], 10) : 0;
-             } catch (e) {
-                 console.error("Error buscando precio:", e);
-                 throw e;
-             }
+                    const response = await ai.models.generateContent({
+                        model: "gemini-2.5-flash",
+                        contents: prompt,
+                        config: {
+                            tools: [{ googleSearch: {} }]
+                        }
+                    });
+                    
+                    const text = response.text || "";
+                    
+                    // Limpieza agresiva para encontrar el número más probable
+                    // Eliminamos posibles textos de cuotas "12x" o "6 cuotas" antes de buscar números
+                    const cleanText = text.replace(/(\d+)\s*(x|cuotas)/gi, ''); 
+                    
+                    // Buscamos el primer número de al menos 3 dígitos (para evitar "12" cuotas, pero permitir precios bajos reales)
+                    const match = cleanText.match(/(\d{3,})/); 
+                    return match ? parseInt(match[0], 10) : 0;
+                 } catch (e) {
+                     console.error("Error buscando precio:", e);
+                     throw e;
+                 }
+            });
         };
 
         // --- COMPONENTES ---
@@ -687,12 +739,7 @@
                          onError("No se pudo encontrar un precio automático. Verifica los datos o intenta ser más específico en el Modelo.");
                      }
                  } catch (e) {
-                     const msg = e.toString();
-                     if (msg.includes("429") || msg.includes("quota")) {
-                         onError("⚠️ Error 429: Cuota excedida de Google Gemini. Espera un minuto.\n\n" + msg);
-                     } else {
-                         onError("Error buscando precio: " + msg);
-                     }
+                     onError(formatGeminiError(e));
                  } finally {
                      setIsPriceLoading(false);
                  }
@@ -1037,12 +1084,7 @@
                         showToast(existing ? "Producto identificado" : "Nuevo producto detectado", "success");
                     } else { showToast("No se pudo identificar el producto", "error"); }
                 } catch (error) {
-                    let msg = error.message || error.toString();
-                    if (msg.includes('429') || msg.includes('quota')) {
-                        setErrorMessage("⚠️ Límite de IA excedido (429). Por favor espera un minuto.\n\n" + msg);
-                    } else {
-                        setErrorMessage("Error analizando imagen: " + msg);
-                    }
+                    setErrorMessage(formatGeminiError(error));
                 } finally {
                     setIsAnalyzingPhoto(false);
                     if (photoInputRef.current) photoInputRef.current.value = '';
