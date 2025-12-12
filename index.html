@@ -62,6 +62,7 @@
         to { transform: scale(1); opacity: 1; }
       }
     </style>
+<link rel="stylesheet" href="/index.css">
 </head>
 <body>
     <div id="root"></div>
@@ -70,7 +71,7 @@
     <script type="text/babel" data-presets="react" data-type="module">
         import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
-        import { Scan, Plus, Search, Package, Sheet, ExternalLink, X, AlertCircle, Wand2, Save, Loader2, Camera, Image as ImageIcon, Sparkles, Cloud, CloudOff, RefreshCw, AlertTriangle, Minus, Trash2, Tag, Wifi, ArrowUp, ArrowDown } from 'https://esm.sh/lucide-react@0.344.0';
+        import { Scan, Plus, Search, Package, Sheet, ExternalLink, X, AlertCircle, Wand2, Save, Loader2, Camera, Image as ImageIcon, Sparkles, Cloud, CloudOff, RefreshCw, AlertTriangle, Minus, Trash2, Tag, Wifi, ArrowUp, ArrowDown, Zap } from 'https://esm.sh/lucide-react@0.344.0';
         import { GoogleGenAI } from 'https://esm.sh/@google/genai';
 
         // --- CONFIGURACIÓN Y CONSTANTES ---
@@ -345,12 +346,16 @@
             );
         };
 
-        const Scanner = ({ onScanSuccess, onClose }) => {
+        const Scanner = ({ onScanSuccess, onClose, mode }) => {
             const [permissionError, setPermissionError] = useState(null);
             const [cameraReady, setCameraReady] = useState(false);
             const [useLocalFile, setUseLocalFile] = useState(false);
             const scannerRef = useRef(null);
             const fileInputRef = useRef(null);
+
+            // Determinar color de borde y texto según el modo
+            const borderColor = mode === 'out' ? 'border-red-500 shadow-[0_0_10px_red]' : (mode === 'in' ? 'border-green-500 shadow-[0_0_10px_lime]' : 'border-brand-500 shadow-[0_0_10px_cyan]');
+            const modeText = mode === 'out' ? 'MODO SALIDA RÁPIDA (-1)' : (mode === 'in' ? 'MODO ENTRADA RÁPIDA (+1)' : 'MODO CONSULTA');
 
             useEffect(() => {
                 let html5QrCode;
@@ -374,7 +379,13 @@
                         await html5QrCode.start(
                             { facingMode: "environment" }, 
                             { fps: 15, qrbox: { width: qrBoxSize, height: qrBoxSize }, aspectRatio: window.innerHeight / window.innerWidth, disableFlip: false },
-                            (decodedText) => { if (isMounted) { if (navigator.vibrate) navigator.vibrate(100); onScanSuccess(decodedText); html5QrCode.stop().catch(console.error); } },
+                            (decodedText) => { 
+                                if (isMounted) { 
+                                    // NO DETENEMOS LA CAMARA AQUI PARA PERMITIR ESCANEO CONTINUO
+                                    // Dejamos que el componente padre decida si cierra o no
+                                    onScanSuccess(decodedText); 
+                                } 
+                            },
                             () => {}
                         );
                         if (isMounted) setCameraReady(true);
@@ -404,7 +415,18 @@
                          ) : (
                             <div className="w-full h-full relative rounded-2xl overflow-hidden bg-gray-900">
                                 <div id="reader" className="w-full h-full"></div>
-                                {cameraReady && <div className="absolute inset-0 pointer-events-none border-[50px] border-black/50 flex items-center justify-center"><div className="w-full h-[2px] bg-red-500 shadow-[0_0_10px_red]"></div></div>}
+                                {cameraReady && (
+                                    <>
+                                        <div className={`absolute inset-0 pointer-events-none border-[50px] border-black/50 flex items-center justify-center`}>
+                                            <div className={`w-full h-[2px] ${borderColor}`}></div>
+                                        </div>
+                                        <div className="absolute bottom-10 left-0 right-0 text-center pointer-events-none">
+                                            <span className="bg-black/60 text-white px-4 py-2 rounded-full text-sm font-bold backdrop-blur-sm">
+                                                {modeText}
+                                            </span>
+                                        </div>
+                                    </>
+                                )}
                             </div>
                          )}
                          <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={(e) => { if(e.target.files[0]) { /* Logica externa */ } }} />
@@ -599,10 +621,14 @@
             const [editingItem, setEditingItem] = useState(undefined);
             const [searchQuery, setSearchQuery] = useState('');
             const [toast, setToast] = useState(null);
-            const [errorMessage, setErrorMessage] = useState(null); // Nuevo estado para errores modales
+            const [errorMessage, setErrorMessage] = useState(null); 
             const [isAnalyzingPhoto, setIsAnalyzingPhoto] = useState(false);
             const [isSyncing, setIsSyncing] = useState(false);
             const [initialSyncDone, setInitialSyncDone] = useState(false);
+            
+            // Refs para controlar el escaneo continuo
+            const lastScanRef = useRef(0);
+            const scanLockRef = useRef(false);
             const photoInputRef = useRef(null);
 
             useEffect(() => {
@@ -628,7 +654,7 @@
 
             const showToast = (msg, type = 'success') => {
                 setToast({ msg, type });
-                setTimeout(() => setToast(null), 3000);
+                setTimeout(() => setToast(null), 3000); // 3 segundos visible
             };
 
             const handleCloudRefresh = async () => {
@@ -654,6 +680,9 @@
             const triggerScanner = () => {
                 setShowActionModal(false);
                 setViewMode('scanner');
+                // Reset de bloqueos
+                scanLockRef.current = false;
+                lastScanRef.current = 0;
             };
 
             const triggerPhoto = () => {
@@ -662,11 +691,59 @@
             };
 
             const handleScanSuccess = async (code) => {
-                setViewMode('list'); 
+                // Control de rebote (debounce) para evitar lecturas múltiples muy rápidas
+                const now = Date.now();
+                if (scanLockRef.current || (now - lastScanRef.current < 2000)) {
+                    return; // Ignorar escaneos muy seguidos (2 segundos de cooldown)
+                }
+                
+                lastScanRef.current = now;
+                scanLockRef.current = true; // Bloqueamos temporalmente
+                
+                if (navigator.vibrate) navigator.vibrate(100);
+
                 const existing = getItemByBarcode(code);
+                
+                // LÓGICA DE ESCANEO RÁPIDO (Ingreso/Egreso de producto existente)
+                if ((actionMode === 'in' || actionMode === 'out') && existing) {
+                    const change = actionMode === 'in' ? 1 : -1;
+                    const newStock = Math.max(0, existing.stock + change);
+                    
+                    if (existing.stock === 0 && change === -1) {
+                        showToast(`El stock ya es 0 para ${existing.brand}`, 'error');
+                        scanLockRef.current = false;
+                        return;
+                    }
+
+                    const updatedItem = { 
+                        ...existing, 
+                        stock: newStock, 
+                        lastUpdated: new Date().toISOString() 
+                    };
+
+                    // Guardamos local y nube
+                    await addOrUpdateItem(updatedItem);
+                    setItems(getInventory()); // Actualizamos UI
+
+                    // Feedback visual
+                    const typeText = actionMode === 'in' ? 'ENTRADA' : 'SALIDA';
+                    const symbol = actionMode === 'in' ? '+' : '-';
+                    showToast(`${typeText}: ${existing.brand} ${existing.model} (Stock: ${newStock})`, actionMode === 'in' ? 'success' : 'error');
+                    
+                    // IMPORTANTE: No cerramos el escáner. Simplemente liberamos el bloqueo.
+                    setTimeout(() => {
+                        scanLockRef.current = false;
+                    }, 500); // Pequeño delay extra de seguridad
+                    return; 
+                }
+
+                // LÓGICA ESTÁNDAR (Producto Nuevo o Modo Vista)
+                // Aquí sí cerramos el escáner y abrimos el formulario
+                setViewMode('list'); // Esto desmonta el Scanner y apaga la cámara
                 
                 if (actionMode === 'out' && !existing) {
                     showToast("Producto no encontrado en inventario", "error");
+                    scanLockRef.current = false;
                     return;
                 }
 
@@ -676,12 +753,13 @@
                 
                 if (existing) showToast(`Producto encontrado: ${existing.brand}`, 'info');
                 else showToast('Nuevo producto detectado', 'info');
+                
+                scanLockRef.current = false;
             };
 
             const handlePhotoUpload = async (e) => {
                 if (e.target.files.length === 0) return;
                 
-                // Validación para evitar llamadas a la API si no hay Key
                 if (API_KEY.includes("PON_TU")) {
                      setErrorMessage("⚠️ Falta API Key. Por favor edita el código fuente index.html y coloca tu clave de Gemini.");
                      return;
@@ -711,8 +789,6 @@
                 } catch (error) {
                     console.error("Detalle del error:", error);
                     let msg = error.message || 'Error desconocido';
-                    
-                    // Aseguramos que los errores graves de API se muestren en el modal centrado
                     if (msg.includes('leaked') || msg.includes('403') || msg.includes('API key') || msg.includes('permission') || msg.includes('fetch')) {
                         setErrorMessage(`⛔ Error de API: ${msg}\n\nRevisa que tu API Key sea válida en index.html.`);
                     } else {
@@ -849,7 +925,7 @@
                     {errorMessage && <ErrorModal message={errorMessage} onClose={() => setErrorMessage(null)} />}
 
                     {showActionModal && <SelectionModal mode={actionMode} onScan={triggerScanner} onPhoto={triggerPhoto} onClose={() => setShowActionModal(false)} />}
-                    {viewMode === 'scanner' && <Scanner onScanSuccess={handleScanSuccess} onClose={() => setViewMode('list')} />}
+                    {viewMode === 'scanner' && <Scanner onScanSuccess={handleScanSuccess} onClose={() => setViewMode('list')} mode={actionMode} />}
                     {viewMode === 'form' && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onDelete={handleDeleteItem} onCancel={() => setViewMode('list')} mode={actionMode} />}
                     
                     {/* TOAST (Para notificaciones rápidas, con estilo mejorado) */}
@@ -861,5 +937,6 @@
         const root = createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>
+<script type="module" src="/index.tsx"></script>
 </body>
 </html>
