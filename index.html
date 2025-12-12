@@ -76,7 +76,7 @@
 
         // --- CONFIGURACIÓN Y CONSTANTES ---
         const SHEETS_URL = "https://docs.google.com/spreadsheets/d/11X8ZnPzmpA-gDXyHNYDc5yyjm8ztSzzm4IJsAvgw-ho/edit?gid=0#gid=0";
-        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwoExn-lRAVpyPFzT7xnx88l31T-DBi7eSKLW1Ibf-Cj7uIsbEhDknv3NeLz_rpnTU1/exec"; 
+        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz1mMHm8cOHuZES21bes3-hR8huQ5Wso9b1DJousRjKG_XOxYUDd87pM5Uuid5AfU8Z/exec"; 
         const STORAGE_KEY = 'inventario_data_v4';
         
         // --- CONFIGURACIÓN DE API KEY ---
@@ -93,6 +93,7 @@
             try {
                 const safeItem = {
                     ...item,
+                    stock: Number(item.stock), // Aseguramos que se envíe un número
                     tags: Array.isArray(item.tags) ? item.tags : []
                 };
                 const payload = {
@@ -100,9 +101,13 @@
                     action: action, 
                     timestamp: new Date().toISOString()
                 };
+                console.log("Sincronizando:", payload);
+                
+                // Usamos keepalive para que la petición sobreviva si la app se cierra o cambia de estado
                 await fetch(APPS_SCRIPT_URL, {
                     method: 'POST',
                     mode: 'no-cors', 
+                    keepalive: true,
                     headers: { 'Content-Type': 'text/plain' },
                     body: JSON.stringify(payload)
                 });
@@ -158,11 +163,22 @@
             const index = items.findIndex(item => item.barcode === newItem.barcode);
             
             if (index !== -1) {
-                items[index] = { ...newItem, stock: items[index].stock, lastUpdated: new Date().toISOString() };
+                // Fusión robusta: newItem tiene prioridad absoluta sobre items[index]
+                items[index] = { 
+                    ...items[index], 
+                    ...newItem, 
+                    stock: Number(newItem.stock), // Forzamos número
+                    lastUpdated: new Date().toISOString() 
+                };
                 saveInventory(items);
+                // Enviamos items[index] que ya tiene el stock fusionado y correcto
                 await syncItemToSheets(items[index], 'update');
             } else {
-                const itemToSave = { ...newItem, lastUpdated: new Date().toISOString() };
+                const itemToSave = { 
+                    ...newItem, 
+                    stock: Number(newItem.stock),
+                    lastUpdated: new Date().toISOString() 
+                };
                 items.push(itemToSave);
                 saveInventory(items);
                 await syncItemToSheets(itemToSave, 'update');
@@ -171,7 +187,6 @@
 
         const ai = new GoogleGenAI({ apiKey: API_KEY });
 
-        // Función mejorada para comprimir imágenes antes de enviar
         const processImage = async (file, maxWidth = 800, quality = 0.7) => {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -206,14 +221,11 @@
 
         const analyzeImageForProduct = async (file) => {
             try {
-                // Comprimir imagen para evitar errores de tamaño excesivo
                 const { data, mimeType } = await processImage(file);
-                
                 const prompt = `
                 Analiza esta imagen de producto (grifería, plomería, hogar).
                 Identifica el producto y extrae la mayor cantidad de información posible.
                 Si puedes leer el código de barras en la imagen, inclúyelo.
-
                 Responde estrictamente en formato JSON con la siguiente estructura:
                 {
                     "barcode": "código numérico o null",
@@ -226,7 +238,6 @@
                     "tags": ["etiqueta1", "etiqueta2", "etiqueta3"]
                 }
                 `;
-
                 const schema = {
                     type: 'OBJECT',
                     properties: {
@@ -240,7 +251,6 @@
                         tags: { type: 'ARRAY', items: { type: 'STRING' } }
                     }
                 };
-
                 const response = await ai.models.generateContent({
                     model: 'gemini-2.5-flash',
                     contents: {
@@ -254,14 +264,10 @@
                         responseSchema: schema
                     }
                 });
-
                 let text = response.text;
                 if (!text) return null;
-                
                 text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-                
                 return JSON.parse(text);
-
             } catch (error) {
                 console.error("Error analizando imagen con Gemini:", error);
                 throw error;
@@ -291,16 +297,10 @@
                             <AlertTriangle className="text-red-600" size={32} />
                         </div>
                         <h3 className="text-lg font-bold text-gray-900 mb-2 shrink-0">Error Detectado</h3>
-                        
-                        {/* Area con scroll por si el mensaje es muy largo */}
                         <div className="overflow-y-auto mb-6 w-full custom-scrollbar max-h-[40vh]">
                             <p className="text-gray-600 break-words text-sm leading-relaxed whitespace-pre-wrap">{message}</p>
                         </div>
-                        
-                        <button 
-                            onClick={onClose}
-                            className="bg-gray-900 text-white py-3 px-6 rounded-xl font-bold w-full hover:bg-gray-800 transition-colors shrink-0"
-                        >
+                        <button onClick={onClose} className="bg-gray-900 text-white py-3 px-6 rounded-xl font-bold w-full hover:bg-gray-800 transition-colors shrink-0">
                             Entendido
                         </button>
                     </div>
@@ -317,9 +317,7 @@
                 <div className="fixed inset-0 z-50 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 relative">
                          <button onClick={onClose} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><X size={24} /></button>
-                         
                          <h2 className={`text-xl font-bold text-center mb-6 ${isOut ? 'text-red-600' : 'text-green-600'}`}>{title}</h2>
-                         
                          <div className="space-y-4">
                             <button onClick={onScan} className="w-full p-4 rounded-xl border border-gray-200 hover:border-brand-500 hover:bg-gray-50 flex items-center gap-4 transition-all group">
                                 <div className={`w-12 h-12 rounded-full ${colorClass} flex items-center justify-center group-hover:scale-110 transition-transform`}>
@@ -330,7 +328,6 @@
                                     <p className="text-xs text-gray-500">Usar lector de barras/QR</p>
                                 </div>
                             </button>
-
                             <button onClick={onPhoto} className="w-full p-4 rounded-xl border border-gray-200 hover:border-brand-500 hover:bg-gray-50 flex items-center gap-4 transition-all group">
                                 <div className={`w-12 h-12 rounded-full ${colorClass} flex items-center justify-center group-hover:scale-110 transition-transform`}>
                                     <Sparkles size={24} />
@@ -353,7 +350,6 @@
             const scannerRef = useRef(null);
             const fileInputRef = useRef(null);
 
-            // Determinar color de borde y texto según el modo
             const borderColor = mode === 'out' ? 'border-red-500 shadow-[0_0_10px_red]' : (mode === 'in' ? 'border-green-500 shadow-[0_0_10px_lime]' : 'border-brand-500 shadow-[0_0_10px_cyan]');
             const modeText = mode === 'out' ? 'MODO SALIDA RÁPIDA (-1)' : (mode === 'in' ? 'MODO ENTRADA RÁPIDA (+1)' : 'MODO CONSULTA');
 
@@ -379,13 +375,7 @@
                         await html5QrCode.start(
                             { facingMode: "environment" }, 
                             { fps: 15, qrbox: { width: qrBoxSize, height: qrBoxSize }, aspectRatio: window.innerHeight / window.innerWidth, disableFlip: false },
-                            (decodedText) => { 
-                                if (isMounted) { 
-                                    // NO DETENEMOS LA CAMARA AQUI PARA PERMITIR ESCANEO CONTINUO
-                                    // Dejamos que el componente padre decida si cierra o no
-                                    onScanSuccess(decodedText); 
-                                } 
-                            },
+                            (decodedText) => { if (isMounted) { onScanSuccess(decodedText); } },
                             () => {}
                         );
                         if (isMounted) setCameraReady(true);
@@ -421,9 +411,7 @@
                                             <div className={`w-full h-[2px] ${borderColor}`}></div>
                                         </div>
                                         <div className="absolute bottom-10 left-0 right-0 text-center pointer-events-none">
-                                            <span className="bg-black/60 text-white px-4 py-2 rounded-full text-sm font-bold backdrop-blur-sm">
-                                                {modeText}
-                                            </span>
+                                            <span className="bg-black/60 text-white px-4 py-2 rounded-full text-sm font-bold backdrop-blur-sm">{modeText}</span>
                                         </div>
                                     </>
                                 )}
@@ -449,17 +437,11 @@
             const [isAiLoading, setIsAiLoading] = useState(false);
             const [isSaving, setIsSaving] = useState(false);
 
-            // Título dinámico
             const formTitle = (brand && model) ? `${brand} ${model}` : (existingItem ? 'Producto Sin Nombre' : 'Nuevo Producto');
 
             const handleAiSuggest = async () => {
                 if (!brand || !model) return;
-                
-                if (API_KEY.includes("PON_TU")) {
-                     alert("⚠️ Falta API Key. Edita el archivo index.html.");
-                     return;
-                }
-
+                if (API_KEY.includes("PON_TU")) { alert("⚠️ Falta API Key."); return; }
                 setIsAiLoading(true);
                 const suggestion = await suggestProductDetails(brand, model);
                 setIsAiLoading(false);
@@ -484,9 +466,7 @@
                 }
             };
 
-            const removeTag = (tagToRemove) => {
-                setTags(tags.filter(t => t !== tagToRemove));
-            };
+            const removeTag = (tagToRemove) => { setTags(tags.filter(t => t !== tagToRemove)); };
 
             const handleSubmit = async (e) => {
                 e.preventDefault();
@@ -499,9 +479,7 @@
             };
 
             const handleDelete = async () => {
-                if(confirm("¿Estás seguro de que quieres eliminar este producto?")) {
-                    await onDelete(barcode);
-                }
+                if(confirm("¿Eliminar producto?")) { await onDelete(barcode); }
             };
 
             return (
@@ -514,24 +492,18 @@
                             </div>
                             <button onClick={onCancel} className="text-gray-500 hover:bg-gray-200 p-2 rounded-full"><X size={24} /></button>
                         </div>
-                        
                         <div className="p-6 overflow-y-auto flex-1 space-y-5">
-                            {/* Sección de Stock Destacada */}
                             <div className={`p-4 rounded-xl border-2 ${mode === 'out' ? 'bg-red-50 border-red-100' : 'bg-green-50 border-green-100'} mb-4`}>
                                 <label className="block text-center text-sm font-bold uppercase tracking-wider mb-2 text-gray-600">
                                     {mode === 'out' ? 'Retirar Stock' : (mode === 'in' ? 'Ingresar Stock' : 'Gestionar Stock')}
                                 </label>
                                 <div className="flex items-center justify-center gap-4">
-                                    <button type="button" onClick={() => setStock(s => Math.max(0, s-1))} className="w-12 h-12 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-all text-gray-700">
-                                        <Minus size={24}/>
-                                    </button>
+                                    <button type="button" onClick={() => setStock(s => Math.max(0, s-1))} className="w-12 h-12 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-all text-gray-700"><Minus size={24}/></button>
                                     <div className="flex flex-col items-center">
                                         <input type="number" value={stock} onChange={(e) => setStock(Number(e.target.value))} className="w-24 text-center text-4xl font-bold bg-transparent outline-none text-gray-900" />
                                         <span className="text-xs text-gray-400 font-medium uppercase">Unidades</span>
                                     </div>
-                                    <button type="button" onClick={() => setStock(s => s+1)} className="w-12 h-12 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-all text-gray-700">
-                                        <Plus size={24}/>
-                                    </button>
+                                    <button type="button" onClick={() => setStock(s => s+1)} className="w-12 h-12 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-all text-gray-700"><Plus size={24}/></button>
                                 </div>
                             </div>
 
@@ -559,7 +531,6 @@
                                 </button>
                             </div>
                             
-                            {/* Sección Etiquetas */}
                             <div>
                                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Etiquetas</label>
                                 <div className="p-2 border border-gray-200 rounded-xl bg-white focus-within:ring-2 focus-within:ring-brand-500 transition-all flex flex-wrap gap-2 min-h-[50px]">
@@ -569,14 +540,7 @@
                                             <button onClick={() => removeTag(tag)} className="hover:text-brand-900 rounded-full p-0.5"><X size={14}/></button>
                                         </span>
                                     ))}
-                                    <input 
-                                        type="text" 
-                                        value={currentTag} 
-                                        onChange={(e) => setCurrentTag(e.target.value)} 
-                                        onKeyDown={handleTagKeyDown}
-                                        className="flex-1 min-w-[100px] outline-none bg-transparent py-1"
-                                        placeholder={tags.length === 0 ? "Escribe y Enter..." : ""}
-                                    />
+                                    <input type="text" value={currentTag} onChange={(e) => setCurrentTag(e.target.value)} onKeyDown={handleTagKeyDown} className="flex-1 min-w-[100px] outline-none bg-transparent py-1" placeholder={tags.length === 0 ? "Escribe y Enter..." : ""} />
                                 </div>
                             </div>
 
@@ -601,9 +565,7 @@
                                 {isSaving ? 'Guardando...' : 'Confirmar Cambios'}
                             </button>
                             {existingItem && (
-                                <button onClick={handleDelete} className="w-full bg-white text-red-500 py-3 px-4 rounded-xl font-medium border border-red-100 hover:bg-red-50 flex items-center justify-center gap-2">
-                                    <Trash2 size={18} /> Eliminar Producto
-                                </button>
+                                <button onClick={handleDelete} className="w-full bg-white text-red-500 py-3 px-4 rounded-xl font-medium border border-red-100 hover:bg-red-50 flex items-center justify-center gap-2"><Trash2 size={18} /> Eliminar Producto</button>
                             )}
                         </div>
                     </div>
@@ -612,10 +574,9 @@
         };
 
         const App = () => {
-            const [viewMode, setViewMode] = useState('list'); // 'list', 'scanner', 'form'
-            const [actionMode, setActionMode] = useState('view'); // 'view', 'in', 'out'
+            const [viewMode, setViewMode] = useState('list');
+            const [actionMode, setActionMode] = useState('view');
             const [showActionModal, setShowActionModal] = useState(false);
-            
             const [items, setItems] = useState([]);
             const [scannedData, setScannedData] = useState(null);
             const [editingItem, setEditingItem] = useState(undefined);
@@ -624,9 +585,7 @@
             const [errorMessage, setErrorMessage] = useState(null); 
             const [isAnalyzingPhoto, setIsAnalyzingPhoto] = useState(false);
             const [isSyncing, setIsSyncing] = useState(false);
-            const [initialSyncDone, setInitialSyncDone] = useState(false);
             
-            // Refs para controlar el escaneo continuo
             const lastScanRef = useRef(0);
             const scanLockRef = useRef(false);
             const photoInputRef = useRef(null);
@@ -645,16 +604,15 @@
                             }
                         } catch (e) { console.error(e); } finally {
                             setIsSyncing(false);
-                            setInitialSyncDone(true);
                         }
-                    } else { setInitialSyncDone(true); }
+                    }
                 };
                 autoSync();
             }, []);
 
             const showToast = (msg, type = 'success') => {
                 setToast({ msg, type });
-                setTimeout(() => setToast(null), 3000); // 3 segundos visible
+                setTimeout(() => setToast(null), 3000);
             };
 
             const handleCloudRefresh = async () => {
@@ -671,7 +629,6 @@
                 setIsSyncing(false);
             };
 
-            // Flujos de Acción
             const openSelectionModal = (mode) => {
                 setActionMode(mode);
                 setShowActionModal(true);
@@ -680,7 +637,6 @@
             const triggerScanner = () => {
                 setShowActionModal(false);
                 setViewMode('scanner');
-                // Reset de bloqueos
                 scanLockRef.current = false;
                 lastScanRef.current = 0;
             };
@@ -691,25 +647,23 @@
             };
 
             const handleScanSuccess = async (code) => {
-                // Control de rebote (debounce) para evitar lecturas múltiples muy rápidas
                 const now = Date.now();
-                if (scanLockRef.current || (now - lastScanRef.current < 2000)) {
-                    return; // Ignorar escaneos muy seguidos (2 segundos de cooldown)
-                }
+                if (scanLockRef.current || (now - lastScanRef.current < 2000)) return;
                 
                 lastScanRef.current = now;
-                scanLockRef.current = true; // Bloqueamos temporalmente
+                scanLockRef.current = true;
                 
                 if (navigator.vibrate) navigator.vibrate(100);
 
                 const existing = getItemByBarcode(code);
                 
-                // LÓGICA DE ESCANEO RÁPIDO (Ingreso/Egreso de producto existente)
                 if ((actionMode === 'in' || actionMode === 'out') && existing) {
                     const change = actionMode === 'in' ? 1 : -1;
-                    const newStock = Math.max(0, existing.stock + change);
+                    // FIX: Aseguramos que sea número con parseInt base 10
+                    const currentStock = parseInt(existing.stock || 0, 10);
+                    const newStock = Math.max(0, currentStock + change);
                     
-                    if (existing.stock === 0 && change === -1) {
+                    if (currentStock === 0 && change === -1) {
                         showToast(`El stock ya es 0 para ${existing.brand}`, 'error');
                         scanLockRef.current = false;
                         return;
@@ -721,25 +675,17 @@
                         lastUpdated: new Date().toISOString() 
                     };
 
-                    // Guardamos local y nube
                     await addOrUpdateItem(updatedItem);
-                    setItems(getInventory()); // Actualizamos UI
+                    setItems(getInventory()); 
 
-                    // Feedback visual
                     const typeText = actionMode === 'in' ? 'ENTRADA' : 'SALIDA';
-                    const symbol = actionMode === 'in' ? '+' : '-';
                     showToast(`${typeText}: ${existing.brand} ${existing.model} (Stock: ${newStock})`, actionMode === 'in' ? 'success' : 'error');
                     
-                    // IMPORTANTE: No cerramos el escáner. Simplemente liberamos el bloqueo.
-                    setTimeout(() => {
-                        scanLockRef.current = false;
-                    }, 500); // Pequeño delay extra de seguridad
+                    setTimeout(() => { scanLockRef.current = false; }, 500);
                     return; 
                 }
 
-                // LÓGICA ESTÁNDAR (Producto Nuevo o Modo Vista)
-                // Aquí sí cerramos el escáner y abrimos el formulario
-                setViewMode('list'); // Esto desmonta el Scanner y apaga la cámara
+                setViewMode('list'); 
                 
                 if (actionMode === 'out' && !existing) {
                     showToast("Producto no encontrado en inventario", "error");
@@ -759,12 +705,7 @@
 
             const handlePhotoUpload = async (e) => {
                 if (e.target.files.length === 0) return;
-                
-                if (API_KEY.includes("PON_TU")) {
-                     setErrorMessage("⚠️ Falta API Key. Por favor edita el código fuente index.html y coloca tu clave de Gemini.");
-                     return;
-                }
-
+                if (API_KEY.includes("PON_TU")) { setErrorMessage("⚠️ Falta API Key."); return; }
                 const imageFile = e.target.files[0];
                 setIsAnalyzingPhoto(true);
                 try {
@@ -783,17 +724,12 @@
                         setEditingItem(existing);
                         setViewMode('form');
                         showToast(existing ? "Producto identificado" : "Nuevo producto detectado", "success");
-                    } else {
-                        showToast("No se pudo identificar el producto", "error");
-                    }
+                    } else { showToast("No se pudo identificar el producto", "error"); }
                 } catch (error) {
-                    console.error("Detalle del error:", error);
                     let msg = error.message || 'Error desconocido';
-                    if (msg.includes('leaked') || msg.includes('403') || msg.includes('API key') || msg.includes('permission') || msg.includes('fetch')) {
-                        setErrorMessage(`⛔ Error de API: ${msg}\n\nRevisa que tu API Key sea válida en index.html.`);
-                    } else {
-                        showToast(msg, "error");
-                    }
+                    if (msg.includes('leaked') || msg.includes('403') || msg.includes('API key')) {
+                        setErrorMessage(`⛔ Error de API: ${msg}`);
+                    } else { showToast(msg, "error"); }
                 } finally {
                     setIsAnalyzingPhoto(false);
                     if (photoInputRef.current) photoInputRef.current.value = '';
@@ -847,13 +783,10 @@
                                 <button onClick={handleCloudRefresh} disabled={isSyncing} className={`p-2 rounded-full text-gray-500 hover:bg-gray-100 transition-all ${isSyncing ? 'animate-spin' : ''}`}>
                                     <RefreshCw size={20} />
                                 </button>
-                                <a href={SHEETS_URL} target="_blank" rel="noopener noreferrer" className="p-2 text-green-600 bg-green-50 rounded-full hover:bg-green-100 transition-colors">
-                                    <Sheet size={20} />
-                                </a>
+                                <a href={SHEETS_URL} target="_blank" rel="noopener noreferrer" className="p-2 text-green-600 bg-green-50 rounded-full hover:bg-green-100 transition-colors"><Sheet size={20} /></a>
                             </div>
                         </div>
                     </header>
-
                     <main>
                         {viewMode === 'list' && (
                             <div className="pt-6 max-w-4xl mx-auto px-4">
@@ -861,28 +794,18 @@
                                     <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
                                     <input type="text" placeholder="Buscar producto..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none shadow-sm" />
                                 </div>
-
                                 {filteredItems.length === 0 ? (
-                                    <div className="text-center py-20 text-gray-400">
-                                        <Package size={48} className="mx-auto mb-4 opacity-20" />
-                                        <p>No se encontraron productos.</p>
-                                    </div>
+                                    <div className="text-center py-20 text-gray-400"><Package size={48} className="mx-auto mb-4 opacity-20" /><p>No se encontraron productos.</p></div>
                                 ) : (
                                     <div className="space-y-3 pb-24">
                                         {filteredItems.map(item => (
                                             <div key={item.barcode} onClick={() => openProductDetail(item)} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all cursor-pointer relative group flex gap-4 items-center">
-                                                <div className="w-12 h-12 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center shrink-0">
-                                                    <Package size={24} />
-                                                </div>
+                                                <div className="w-12 h-12 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center shrink-0"><Package size={24} /></div>
                                                 <div className="flex-1 min-w-0">
-                                                    <h4 className="font-bold text-gray-900 truncate text-lg">
-                                                        {item.brand} {item.model}
-                                                    </h4>
+                                                    <h4 className="font-bold text-gray-900 truncate text-lg">{item.brand} {item.model}</h4>
                                                     <p className="text-xs text-gray-500 font-mono truncate">{item.barcode}</p>
                                                     <div className="flex flex-wrap gap-1 mt-1">
-                                                        {item.tags && item.tags.slice(0, 3).map(t => (
-                                                            <span key={t} className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{t}</span>
-                                                        ))}
+                                                        {item.tags && item.tags.slice(0, 3).map(t => (<span key={t} className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{t}</span>))}
                                                     </div>
                                                 </div>
                                                 <div className="text-center px-2">
@@ -893,42 +816,25 @@
                                         ))}
                                     </div>
                                 )}
-                                
-                                {/* BOTONES FLOTANTES FAB */}
                                 <div className="fixed bottom-6 right-6 flex flex-col gap-4 z-30">
-                                    <button onClick={() => openSelectionModal('in')} className="w-16 h-16 bg-green-600 text-white rounded-full shadow-xl shadow-green-600/30 flex items-center justify-center hover:bg-green-700 active:scale-95 transition-all">
-                                        <ArrowUp size={32} />
-                                    </button>
-                                    <button onClick={() => openSelectionModal('out')} className="w-16 h-16 bg-red-600 text-white rounded-full shadow-xl shadow-red-600/30 flex items-center justify-center hover:bg-red-700 active:scale-95 transition-all">
-                                        <ArrowDown size={32} />
-                                    </button>
+                                    <button onClick={() => openSelectionModal('in')} className="w-16 h-16 bg-green-600 text-white rounded-full shadow-xl shadow-green-600/30 flex items-center justify-center hover:bg-green-700 active:scale-95 transition-all"><ArrowUp size={32} /></button>
+                                    <button onClick={() => openSelectionModal('out')} className="w-16 h-16 bg-red-600 text-white rounded-full shadow-xl shadow-red-600/30 flex items-center justify-center hover:bg-red-700 active:scale-95 transition-all"><ArrowDown size={32} /></button>
                                 </div>
                             </div>
                         )}
                     </main>
-
-                    {/* Overlay de Carga IA */}
                     {isAnalyzingPhoto && (
                         <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center text-white backdrop-blur-md">
-                            <div className="relative">
-                                <Sparkles size={64} className="text-purple-400 animate-pulse" />
-                                <div className="absolute inset-0 bg-purple-500/20 blur-xl rounded-full animate-ping"></div>
-                            </div>
+                            <div className="relative"><Sparkles size={64} className="text-purple-400 animate-pulse" /><div className="absolute inset-0 bg-purple-500/20 blur-xl rounded-full animate-ping"></div></div>
                             <p className="text-2xl font-bold mt-6">Analizando Imagen</p>
                             <p className="text-gray-400 mt-2 text-center max-w-xs">Procesando...</p>
                         </div>
                     )}
-
                     <input type="file" ref={photoInputRef} className="hidden" accept="image/*" capture="environment" onChange={handlePhotoUpload} />
-
-                    {/* MODAL DE ERROR (Para API Keys y errores graves) */}
                     {errorMessage && <ErrorModal message={errorMessage} onClose={() => setErrorMessage(null)} />}
-
                     {showActionModal && <SelectionModal mode={actionMode} onScan={triggerScanner} onPhoto={triggerPhoto} onClose={() => setShowActionModal(false)} />}
                     {viewMode === 'scanner' && <Scanner onScanSuccess={handleScanSuccess} onClose={() => setViewMode('list')} mode={actionMode} />}
                     {viewMode === 'form' && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onDelete={handleDeleteItem} onCancel={() => setViewMode('list')} mode={actionMode} />}
-                    
-                    {/* TOAST (Para notificaciones rápidas, con estilo mejorado) */}
                     {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl text-white font-medium text-sm transition-all animate-bounce z-50 flex items-center gap-2 max-w-[90vw] text-center ${toast.type === 'error' ? 'bg-red-500' : 'bg-gray-900'}`}>{toast.type === 'success' && <div className="w-2 h-2 rounded-full bg-green-400 shrink-0"></div>}{toast.msg}</div>}
                 </div>
             );
