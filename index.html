@@ -86,11 +86,30 @@
         
         // --- SERVICIOS ---
         
-        // Helper para obtener la instancia de IA con la clave guardada
         const getAiInstance = () => {
             const key = localStorage.getItem(API_KEY_STORAGE);
             if (!key) throw new Error("Falta la API Key. Configúrala en el botón de llave.");
             return new GoogleGenAI({ apiKey: key });
+        };
+
+        const callGeminiWithRetry = async (apiCallFn, maxRetries = 2) => {
+            let delay = 2000;
+            for (let i = 0; i <= maxRetries; i++) {
+                try {
+                    return await apiCallFn();
+                } catch (error) {
+                    const msg = error.toString().toLowerCase();
+                    const isQuotaError = msg.includes("429") || msg.includes("resource_exhausted") || msg.includes("quota");
+                    
+                    if (isQuotaError && i < maxRetries) {
+                        console.warn(`⚠️ Cuota excedida (429). Reintentando en ${delay/1000}s... (Intento ${i+1}/${maxRetries})`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        delay *= 2;
+                    } else {
+                        throw error;
+                    }
+                }
+            }
         };
         
         const syncItemToSheets = async (item, action = 'update') => {
@@ -99,7 +118,7 @@
                 const safeItem = {
                     ...item,
                     stock: Number(item.stock), 
-                    mlPrice: Number(item.mlPrice || 0), // Asegurar envío del precio
+                    mlPrice: Number(item.mlPrice || 0), 
                     tags: Array.isArray(item.tags) ? item.tags : []
                 };
                 const payload = {
@@ -107,8 +126,6 @@
                     action: action, 
                     timestamp: new Date().toISOString()
                 };
-                console.log("Sincronizando:", payload);
-                
                 await fetch(APPS_SCRIPT_URL, {
                     method: 'POST',
                     mode: 'no-cors', 
@@ -131,7 +148,6 @@
                 const data = await response.json();
                 return Array.isArray(data) ? data : [];
             } catch (error) {
-                console.warn("No se pudo descargar desde la nube:", error);
                 return null; 
             }
         };
@@ -201,17 +217,14 @@
                         const canvas = document.createElement('canvas');
                         let width = img.width;
                         let height = img.height;
-
                         if (width > maxWidth) {
                             height = Math.round((height * maxWidth) / width);
                             width = maxWidth;
                         }
-
                         canvas.width = width;
                         canvas.height = height;
                         const ctx = canvas.getContext('2d');
                         ctx.drawImage(img, 0, 0, width, height);
-                        
                         const dataUrl = canvas.toDataURL('image/jpeg', quality);
                         const base64 = dataUrl.split(',')[1];
                         resolve({ data: base64, mimeType: 'image/jpeg' });
@@ -223,25 +236,10 @@
         };
 
         const analyzeImageForProduct = async (file) => {
-            try {
+            return callGeminiWithRetry(async () => {
                 const ai = getAiInstance();
                 const { data, mimeType } = await processImage(file);
-                const prompt = `
-                Analiza esta imagen de producto (grifería, plomería, hogar).
-                Identifica el producto y extrae la mayor cantidad de información posible.
-                Si puedes leer el código de barras en la imagen, inclúyelo.
-                Responde estrictamente en formato JSON con la siguiente estructura:
-                {
-                    "barcode": "código numérico o null",
-                    "brand": "Marca visible o sugerida",
-                    "model": "Modelo visible o descripción corta",
-                    "color": "Color o acabado",
-                    "location": "Ubicación sugerida (Cocina, Baño, etc.)",
-                    "installType": "Tipo de instalación (Pared, Mesada, etc.)",
-                    "details": "Descripción breve y características",
-                    "tags": ["etiqueta1", "etiqueta2", "etiqueta3"]
-                }
-                `;
+                const prompt = `Analiza esta imagen de producto (grifería, plomería, hogar). Identifica el producto. Responde JSON: { "barcode": "null si no ves", "brand": "Marca", "model": "Modelo", "color": "Color", "location": "Ubicación sugerida", "installType": "Tipo inst.", "details": "Descrip.", "tags": ["tag1"] }`;
                 const schema = {
                     type: 'OBJECT',
                     properties: {
@@ -257,29 +255,15 @@
                 };
                 const response = await ai.models.generateContent({
                     model: 'gemini-2.5-flash',
-                    contents: {
-                        parts: [
-                            { inlineData: { mimeType: mimeType, data: data } },
-                            { text: prompt }
-                        ]
-                    },
-                    config: {
-                        responseMimeType: "application/json",
-                        responseSchema: schema
-                    }
+                    contents: { parts: [{ inlineData: { mimeType: mimeType, data: data } }, { text: prompt }] },
+                    config: { responseMimeType: "application/json", responseSchema: schema }
                 });
-                let text = response.text;
-                if (!text) return null;
-                text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-                return JSON.parse(text);
-            } catch (error) {
-                console.error("Error analizando imagen con Gemini:", error);
-                throw error;
-            }
+                return JSON.parse(response.text.replace(/```json/g, '').replace(/```/g, '').trim());
+            });
         };
 
         const suggestProductDetails = async (brand, model) => {
-            try {
+            return callGeminiWithRetry(async () => {
                 const ai = getAiInstance();
                 const prompt = `Actúa como experto en ferretería. Sugiere instalación, ubicación y etiquetas para: Marca "${brand}", Modelo "${model}". JSON: {installType, location, details, tags: []}`;
                 const response = await ai.models.generateContent({
@@ -288,63 +272,34 @@
                     config: { responseMimeType: "application/json" }
                 });
                 return JSON.parse(response.text);
-            } catch (e) { 
-                console.error(e);
-                return null; 
-            }
+            });
         };
 
         const getMercadoLibrePrice = async (query) => {
-             try {
+             return callGeminiWithRetry(async () => {
                 const ai = getAiInstance();
-                // Prompt ingeniería para evitar alucinaciones con cuotas o envíos
-                const prompt = `
-                Actúa como un asistente de compras experto en Argentina.
-                Objetivo: Encontrar el precio de mercado actual en Pesos Argentinos (ARS) para: "${query}".
-                
-                Instrucciones:
-                1. Usa Google Search para buscar este producto ESPECÍFICAMENTE en el sitio 'mercadolibre.com.ar'.
-                2. Busca el precio de un producto NUEVO. Ignora usados.
-                3. CRÍTICO: Debes distinguir el precio total del valor de las "cuotas". NO confundas "12x $5.000" con un precio de $5.000. El precio real sería aprox $60.000.
-                4. Ignora costos de envío.
-                5. Si hay varios resultados, descarta los muy baratos (repuestos/accesorios) y toma un promedio de los precios coherentes del producto principal.
-                6. Tu respuesta final debe ser SOLAMENTE un número entero representando el precio en ARS (sin puntos ni símbolos). Ejemplo: 154000.
-                Si no encuentras nada confiable, responde: 0.
-                `;
-
+                const prompt = `Objetivo: Encontrar precio en ARS de: "${query}" en mercadolibre.com.ar. Nuevo. Ignora cuotas. Devuelve SOLO un número entero (ej: 154000). Si no encuentras, 0.`;
                 const response = await ai.models.generateContent({
                     model: "gemini-2.5-flash",
                     contents: prompt,
-                    config: {
-                        tools: [{ googleSearch: {} }]
-                    }
+                    config: { tools: [{ googleSearch: {} }] }
                 });
-                
-                const text = response.text || "";
-                
-                // Limpieza agresiva para encontrar el número más probable
-                // Eliminamos posibles textos de cuotas "12x" o "6 cuotas" antes de buscar números
-                const cleanText = text.replace(/(\d+)\s*(x|cuotas)/gi, ''); 
-                
-                // Buscamos el primer número de al menos 3 dígitos (para evitar "12" cuotas, pero permitir precios bajos reales)
+                const cleanText = (response.text || "").replace(/(\d+)\s*(x|cuotas)/gi, ''); 
                 const match = cleanText.match(/(\d{3,})/); 
                 return match ? parseInt(match[0], 10) : 0;
-             } catch (e) {
-                 console.error("Error buscando precio:", e);
-                 throw e;
-             }
+             });
         };
 
         // --- COMPONENTES ---
 
         const ErrorModal = ({ message, onClose }) => (
-            <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6">
                 <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full max-h-[85vh] flex flex-col animate-in fade-in zoom-in duration-200">
                     <div className="flex flex-col items-center text-center">
                         <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4 shrink-0">
                             <AlertTriangle className="text-red-600" size={32} />
                         </div>
-                        <h3 className="text-lg font-bold text-gray-900 mb-2 shrink-0">Error Detectado</h3>
+                        <h3 className="text-lg font-bold text-gray-900 mb-2 shrink-0">Atención</h3>
                         <div className="overflow-y-auto mb-6 w-full custom-scrollbar max-h-[40vh]">
                             <p className="text-gray-600 break-words text-sm leading-relaxed whitespace-pre-wrap">{message}</p>
                         </div>
@@ -359,7 +314,6 @@
         const ScanConfirmationModal = ({ data, type, onConfirm, onCancel }) => {
             const isEntry = type === 'in';
             const existing = data.item;
-            
             return (
                  <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-4 sm:p-0">
                      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel}></div>
@@ -378,7 +332,6 @@
                                 </h2>
                                 {existing && <p className="text-sm text-gray-500 mt-1">{existing.details || 'Sin descripción'}</p>}
                             </div>
-                            
                             <div className="bg-gray-50 rounded-xl p-3 mb-6 inline-block border border-gray-100">
                                 <span className="text-gray-500 text-xs uppercase font-bold mr-2">Stock Actual:</span>
                                 <span className="text-xl font-bold text-gray-800">{existing ? existing.stock : 0}</span>
@@ -387,11 +340,8 @@
                                     {existing ? Math.max(0, parseInt(existing.stock || 0) + (isEntry ? 1 : -1)) : (isEntry ? 1 : 0)}
                                 </span>
                             </div>
-
                             <div className="grid grid-cols-2 gap-3">
-                                <button onClick={onCancel} className="py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-bold transition-colors">
-                                    Cancelar
-                                </button>
+                                <button onClick={onCancel} className="py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-bold transition-colors">Cancelar</button>
                                 <button onClick={onConfirm} className={`py-3 px-4 text-white rounded-xl font-bold shadow-lg transition-transform active:scale-95 flex items-center justify-center gap-2 ${isEntry ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'}`}>
                                     <CheckCircle size={20} /> Confirmar
                                 </button>
@@ -404,49 +354,26 @@
 
         const ApiKeyModal = ({ onClose }) => {
             const [key, setKey] = useState(localStorage.getItem(API_KEY_STORAGE) || '');
-            
             const handleSave = () => {
-                if(key.trim().length < 10) {
-                    alert("Por favor ingresa una API Key válida.");
-                    return;
-                }
+                if(key.trim().length < 10) { alert("Por favor ingresa una API Key válida."); return; }
                 localStorage.setItem(API_KEY_STORAGE, key.trim());
                 onClose();
             };
-
             return (
                 <div className="fixed inset-0 z-[70] bg-gray-900/90 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 relative animate-in fade-in zoom-in duration-200">
                          <div className="flex flex-col items-center mb-6">
-                            <div className="w-14 h-14 bg-brand-100 text-brand-600 rounded-full flex items-center justify-center mb-3">
-                                <Key size={28} />
-                            </div>
+                            <div className="w-14 h-14 bg-brand-100 text-brand-600 rounded-full flex items-center justify-center mb-3"><Key size={28} /></div>
                             <h2 className="text-xl font-bold text-gray-800">Configurar API Key</h2>
-                            <p className="text-sm text-gray-500 text-center mt-1">
-                                Ingresa tu clave de Google Gemini para habilitar las funciones de IA. Se guardará solo en tu dispositivo.
-                            </p>
+                            <p className="text-sm text-gray-500 text-center mt-1">Ingresa tu clave de Google Gemini para habilitar las funciones de IA.</p>
                          </div>
-                         
                          <div className="space-y-4">
                              <div>
                                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">API Key</label>
-                                 <input 
-                                    type="text" 
-                                    value={key} 
-                                    onChange={(e) => setKey(e.target.value)} 
-                                    className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none font-mono text-sm" 
-                                    placeholder="AIzaSy..." 
-                                 />
+                                 <input type="text" value={key} onChange={(e) => setKey(e.target.value)} className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none font-mono text-sm" placeholder="AIzaSy..." />
                              </div>
-                             
-                             <button onClick={handleSave} className="w-full bg-brand-600 text-white py-3 rounded-xl font-bold hover:bg-brand-700 transition-colors shadow-lg shadow-brand-500/30">
-                                 Guardar Configuración
-                             </button>
-                             <div className="text-center">
-                                <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-xs text-brand-600 hover:underline">
-                                    Conseguir API Key gratis en Google AI Studio
-                                </a>
-                             </div>
+                             <button onClick={handleSave} className="w-full bg-brand-600 text-white py-3 rounded-xl font-bold hover:bg-brand-700 transition-colors shadow-lg shadow-brand-500/30">Guardar Configuración</button>
+                             <div className="text-center"><a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-xs text-brand-600 hover:underline">Conseguir API Key gratis en Google AI Studio</a></div>
                          </div>
                     </div>
                 </div>
@@ -457,27 +384,20 @@
             const totalStock = items.reduce((sum, item) => sum + (Number(item.stock) || 0), 0);
             const totalValue = items.reduce((sum, item) => sum + ((Number(item.stock) || 0) * (Number(item.mlPrice) || 0)), 0);
             const itemsWithPrice = items.filter(i => i.mlPrice > 0).length;
-            
-            // Formateador de moneda para Argentina
             const fmt = new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 });
-
             return (
                 <div className="fixed inset-0 z-50 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200">
                          <div className="bg-gradient-to-r from-emerald-600 to-emerald-800 p-6 text-white text-center">
-                             <div className="mx-auto bg-white/20 w-16 h-16 rounded-full flex items-center justify-center mb-3 backdrop-blur-sm">
-                                <DollarSign size={32} className="text-white" />
-                             </div>
+                             <div className="mx-auto bg-white/20 w-16 h-16 rounded-full flex items-center justify-center mb-3 backdrop-blur-sm"><DollarSign size={32} className="text-white" /></div>
                              <h2 className="text-2xl font-bold">Valorización de Stock</h2>
                              <p className="text-emerald-100 text-sm">Estimación basada en MercadoLibre</p>
                          </div>
-                         
                          <div className="p-6 space-y-6">
                             <div className="text-center">
                                 <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">VALOR TOTAL ESTIMADO</p>
                                 <p className="text-4xl font-black text-gray-800 tracking-tight">{fmt.format(totalValue)}</p>
                             </div>
-
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="bg-gray-50 p-4 rounded-xl border border-gray-100 text-center">
                                     <p className="text-gray-500 text-xs font-bold uppercase">Unidades</p>
@@ -488,17 +408,8 @@
                                     <p className="text-xl font-bold text-gray-800">{itemsWithPrice} <span className="text-gray-400 text-sm">/ {items.length}</span></p>
                                 </div>
                             </div>
-
-                            <p className="text-xs text-gray-400 text-center italic leading-relaxed">
-                                * Los precios son referencias automáticas obtenidas de MercadoLibre y pueden variar.
-                            </p>
                          </div>
-
-                         <div className="p-4 bg-gray-50 border-t">
-                             <button onClick={onClose} className="w-full bg-white border border-gray-300 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-100 transition-colors">
-                                 Cerrar
-                             </button>
-                         </div>
+                         <div className="p-4 bg-gray-50 border-t"><button onClick={onClose} className="w-full bg-white border border-gray-300 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-100 transition-colors">Cerrar</button></div>
                     </div>
                 </div>
             );
@@ -508,7 +419,6 @@
             const isOut = mode === 'out';
             const colorClass = isOut ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700';
             const title = isOut ? 'Retirar Stock' : 'Ingresar Stock';
-
             return (
                 <div className="fixed inset-0 z-50 bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 relative">
@@ -516,22 +426,12 @@
                          <h2 className={`text-xl font-bold text-center mb-6 ${isOut ? 'text-red-600' : 'text-green-600'}`}>{title}</h2>
                          <div className="space-y-4">
                             <button onClick={onScan} className="w-full p-4 rounded-xl border border-gray-200 hover:border-brand-500 hover:bg-gray-50 flex items-center gap-4 transition-all group">
-                                <div className={`w-12 h-12 rounded-full ${colorClass} flex items-center justify-center group-hover:scale-110 transition-transform`}>
-                                    <Scan size={24} />
-                                </div>
-                                <div className="text-left">
-                                    <p className="font-bold text-gray-800">Escanear Código</p>
-                                    <p className="text-xs text-gray-500">Usar lector de barras/QR</p>
-                                </div>
+                                <div className={`w-12 h-12 rounded-full ${colorClass} flex items-center justify-center group-hover:scale-110 transition-transform`}><Scan size={24} /></div>
+                                <div className="text-left"><p className="font-bold text-gray-800">Escanear Código</p><p className="text-xs text-gray-500">Usar lector de barras/QR</p></div>
                             </button>
                             <button onClick={onPhoto} className="w-full p-4 rounded-xl border border-gray-200 hover:border-brand-500 hover:bg-gray-50 flex items-center gap-4 transition-all group">
-                                <div className={`w-12 h-12 rounded-full ${colorClass} flex items-center justify-center group-hover:scale-110 transition-transform`}>
-                                    <Sparkles size={24} />
-                                </div>
-                                <div className="text-left">
-                                    <p className="font-bold text-gray-800">Analizar Foto (IA)</p>
-                                    <p className="text-xs text-gray-500">Cámara o Galería</p>
-                                </div>
+                                <div className={`w-12 h-12 rounded-full ${colorClass} flex items-center justify-center group-hover:scale-110 transition-transform`}><Sparkles size={24} /></div>
+                                <div className="text-left"><p className="font-bold text-gray-800">Analizar Foto (IA)</p><p className="text-xs text-gray-500">Cámara o Galería</p></div>
                             </button>
                          </div>
                     </div>
@@ -542,42 +442,29 @@
         const Scanner = ({ onScanSuccess, onClose, mode }) => {
             const [permissionError, setPermissionError] = useState(null);
             const [cameraReady, setCameraReady] = useState(false);
-            const [useLocalFile, setUseLocalFile] = useState(false);
             const scannerRef = useRef(null);
             const fileInputRef = useRef(null);
-
             const borderColor = mode === 'out' ? 'border-red-500 shadow-[0_0_10px_red]' : (mode === 'in' ? 'border-green-500 shadow-[0_0_10px_lime]' : 'border-brand-500 shadow-[0_0_10px_cyan]');
             const modeText = mode === 'out' ? 'MODO SALIDA RÁPIDA (-1)' : (mode === 'in' ? 'MODO ENTRADA RÁPIDA (+1)' : 'MODO CONSULTA');
 
             useEffect(() => {
                 let html5QrCode;
                 let isMounted = true;
-                const protocol = window.location.protocol;
-                const isFileOrContent = protocol === 'file:' || protocol === 'content:';
-                
-                if (isFileOrContent) {
-                    setUseLocalFile(true); 
-                    setPermissionError("MODO LOCAL: La cámara no funciona en archivos locales (file://).");
-                    return;
-                }
-
+                if (window.location.protocol === 'file:') { setPermissionError("La cámara no funciona en archivos locales (file://)."); return; }
                 const startCamera = async () => {
                     await new Promise(r => setTimeout(r, 400));
                     if (!document.getElementById("reader")) return;
                     try {
                         html5QrCode = new Html5Qrcode("reader");
                         scannerRef.current = html5QrCode;
-                        const qrBoxSize = Math.min(window.innerWidth * 0.7, 300);
                         await html5QrCode.start(
                             { facingMode: "environment" }, 
-                            { fps: 15, qrbox: { width: qrBoxSize, height: qrBoxSize }, aspectRatio: window.innerHeight / window.innerWidth, disableFlip: false },
-                            (decodedText) => { if (isMounted) { onScanSuccess(decodedText); } },
+                            { fps: 15, qrbox: { width: 300, height: 300 } },
+                            (decodedText) => { if (isMounted) onScanSuccess(decodedText); },
                             () => {}
                         );
                         if (isMounted) setCameraReady(true);
-                    } catch (err) {
-                        if (isMounted) setPermissionError("No se pudo acceder a la cámara. Verifica los permisos o usa el modo 'Foto'.");
-                    }
+                    } catch (err) { if (isMounted) setPermissionError("No se pudo acceder a la cámara."); }
                 };
                 startCamera();
                 return () => { isMounted = false; if (scannerRef.current?.isScanning) scannerRef.current.stop().catch(console.error); };
@@ -594,32 +481,24 @@
                             <div className="text-center text-white px-6">
                                 <AlertTriangle className="mx-auto text-yellow-500 mb-4" size={48} />
                                 <p className="mb-6">{permissionError}</p>
-                                <button onClick={() => fileInputRef.current?.click()} className="bg-brand-600 text-white py-3 px-6 rounded-xl font-bold flex items-center gap-2 mx-auto">
-                                    <Camera size={20} /> Usar Foto
-                                </button>
                             </div>
                          ) : (
                             <div className="w-full h-full relative rounded-2xl overflow-hidden bg-gray-900">
                                 <div id="reader" className="w-full h-full"></div>
                                 {cameraReady && (
                                     <>
-                                        <div className={`absolute inset-0 pointer-events-none border-[50px] border-black/50 flex items-center justify-center`}>
-                                            <div className={`w-full h-[2px] ${borderColor}`}></div>
-                                        </div>
-                                        <div className="absolute bottom-10 left-0 right-0 text-center pointer-events-none">
-                                            <span className="bg-black/60 text-white px-4 py-2 rounded-full text-sm font-bold backdrop-blur-sm">{modeText}</span>
-                                        </div>
+                                        <div className={`absolute inset-0 pointer-events-none border-[50px] border-black/50 flex items-center justify-center`}><div className={`w-full h-[2px] ${borderColor}`}></div></div>
+                                        <div className="absolute bottom-10 left-0 right-0 text-center pointer-events-none"><span className="bg-black/60 text-white px-4 py-2 rounded-full text-sm font-bold backdrop-blur-sm">{modeText}</span></div>
                                     </>
                                 )}
                             </div>
                          )}
-                         <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={(e) => { if(e.target.files[0]) { /* Logica externa */ } }} />
                     </div>
                 </div>
             );
         };
 
-        const ProductForm = ({ initialData, existingItem, onSave, onDelete, onCancel, mode }) => {
+        const ProductForm = ({ initialData, existingItem, onSave, onDelete, onCancel, mode, onError }) => {
             const [barcode, setBarcode] = useState(initialData?.barcode || '');
             const [brand, setBrand] = useState(existingItem?.brand || initialData?.brand || '');
             const [model, setModel] = useState(existingItem?.model || initialData?.model || '');
@@ -628,83 +507,45 @@
             const [installType, setInstallType] = useState(existingItem?.installType || initialData?.installType || '');
             const [details, setDetails] = useState(existingItem?.details || initialData?.details || '');
             const [tags, setTags] = useState(existingItem?.tags || initialData?.tags || []);
-            // Se inicializa como string vacío si es 0 para facilitar la edición
             const [mlPrice, setMlPrice] = useState(existingItem?.mlPrice ? existingItem.mlPrice : '');
             const [currentTag, setCurrentTag] = useState('');
             const [stock, setStock] = useState(existingItem?.stock || 0);
             const [isAiLoading, setIsAiLoading] = useState(false);
             const [isPriceLoading, setIsPriceLoading] = useState(false);
             const [isSaving, setIsSaving] = useState(false);
-
             const formTitle = (brand && model) ? `${brand} ${model}` : (existingItem ? 'Producto Sin Nombre' : 'Nuevo Producto');
 
             const handleAiSuggest = async () => {
                 if (!brand || !model) return;
                 setIsAiLoading(true);
-                const suggestion = await suggestProductDetails(brand, model);
-                setIsAiLoading(false);
-                if (suggestion) {
-                    setInstallType(suggestion.installType || installType);
-                    setLocation(suggestion.location || location);
-                    setDetails(suggestion.details || details);
-                    if (suggestion.tags && Array.isArray(suggestion.tags)) {
-                        setTags([...new Set([...tags, ...suggestion.tags])]);
+                try {
+                    const suggestion = await suggestProductDetails(brand, model);
+                    if (suggestion) {
+                        setInstallType(suggestion.installType || installType);
+                        setLocation(suggestion.location || location);
+                        setDetails(suggestion.details || details);
+                        if (suggestion.tags && Array.isArray(suggestion.tags)) setTags([...new Set([...tags, ...suggestion.tags])]);
                     }
-                }
+                } catch (e) {
+                    // Silencioso o log
+                } finally { setIsAiLoading(false); }
             };
 
             const handlePriceCheck = async () => {
-                 const queryParts = [];
-                 // Prioridad a Marca y Modelo
-                 if (brand) queryParts.push(brand);
-                 if (model) queryParts.push(model);
-                 
-                 // Detalles importantes para ferretería/hogar
-                 if (installType) queryParts.push(installType);
-                 if (location) queryParts.push(location);
-                 if (color) queryParts.push(color);
-
-                 // Detalles adicionales con limite mayor
-                 if (details && details.length < 60) queryParts.push(details);
-
-                 // Si tenemos poco texto, agregamos el código de barras
-                 if (queryParts.length < 3 && barcode) {
-                    queryParts.push(barcode);
-                 }
-
-                 if (queryParts.length === 0) {
-                     alert("Ingresa al menos una Marca y Modelo para buscar el precio.");
-                     return;
-                 }
-
+                 const queryParts = [brand, model, installType, location].filter(Boolean);
+                 if (queryParts.length < 2) { onError("Ingresa al menos una Marca y Modelo para buscar el precio."); return; }
                  const query = queryParts.join(" ");
                  setIsPriceLoading(true);
                  try {
                      const price = await getMercadoLibrePrice(query);
-                     if (price && price > 0) {
-                         setMlPrice(price);
-                     } else {
-                         alert("No se pudo encontrar un precio automático. Verifica los datos o intenta ser más específico en el Modelo.");
-                     }
+                     if (price && price > 0) setMlPrice(price);
+                     else onError("No se encontró precio automático. Verifica los datos.");
                  } catch (e) {
-                     alert("Error buscando precio: " + e.message);
-                 } finally {
-                     setIsPriceLoading(false);
-                 }
+                     const msg = e.toString().toLowerCase();
+                     if (msg.includes("429") || msg.includes("quota")) onError("⚠️ Límite de IA excedido (429). El sistema está saturado, por favor espera 1 minuto.");
+                     else onError("Error buscando precio: " + e.message);
+                 } finally { setIsPriceLoading(false); }
             };
-
-            const handleTagKeyDown = (e) => {
-                if (e.key === 'Enter') {
-                    e.preventDefault();
-                    const val = currentTag.trim();
-                    if (val && !tags.includes(val)) {
-                        setTags([...tags, val]);
-                        setCurrentTag('');
-                    }
-                }
-            };
-
-            const removeTag = (tagToRemove) => { setTags(tags.filter(t => t !== tagToRemove)); };
 
             const handleSubmit = async (e) => {
                 e.preventDefault();
@@ -716,21 +557,14 @@
                 setIsSaving(false);
             };
 
-            const handleDelete = async () => {
-                if(confirm("¿Eliminar producto?")) { await onDelete(barcode); }
-            };
-
-            // Valor total de este item
+            const removeTag = (tagToRemove) => { setTags(tags.filter(t => t !== tagToRemove)); };
             const itemTotalValue = (Number(stock) || 0) * (Number(mlPrice) || 0);
 
             return (
                 <div className="fixed inset-0 z-40 bg-gray-900/50 backdrop-blur-sm flex justify-center items-end sm:items-center p-0 sm:p-4">
                     <div className="bg-white w-full max-w-lg rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90vh]">
                         <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-2xl">
-                            <div>
-                                <h2 className="text-xl font-bold text-gray-800">{formTitle}</h2>
-                                <p className="text-xs text-gray-500 font-mono mt-0.5">{barcode}</p>
-                            </div>
+                            <div><h2 className="text-xl font-bold text-gray-800">{formTitle}</h2><p className="text-xs text-gray-500 font-mono mt-0.5">{barcode}</p></div>
                             <button onClick={onCancel} className="text-gray-500 hover:bg-gray-200 p-2 rounded-full"><X size={24} /></button>
                         </div>
                         <div className="p-6 overflow-y-auto flex-1 space-y-5">
@@ -739,29 +573,17 @@
                                     {mode === 'out' ? 'Retirar Stock' : (mode === 'in' ? 'Ingresar Stock' : 'Gestionar Stock')}
                                 </label>
                                 <div className="flex items-center justify-center gap-4">
-                                    <button type="button" onClick={() => setStock(s => Math.max(0, s-1))} className="w-12 h-12 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-all text-gray-700"><Minus size={24}/></button>
-                                    <div className="flex flex-col items-center">
-                                        <input type="number" value={stock} onChange={(e) => setStock(Number(e.target.value))} className="w-24 text-center text-4xl font-bold bg-transparent outline-none text-gray-900" />
-                                        <span className="text-xs text-gray-400 font-medium uppercase">Unidades</span>
-                                    </div>
-                                    <button type="button" onClick={() => setStock(s => s+1)} className="w-12 h-12 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-all text-gray-700"><Plus size={24}/></button>
+                                    <button type="button" onClick={() => setStock(s => Math.max(0, s-1))} className="w-12 h-12 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 text-gray-700"><Minus size={24}/></button>
+                                    <div className="flex flex-col items-center"><input type="number" value={stock} onChange={(e) => setStock(Number(e.target.value))} className="w-24 text-center text-4xl font-bold bg-transparent outline-none text-gray-900" /><span className="text-xs text-gray-400 font-medium uppercase">Unidades</span></div>
+                                    <button type="button" onClick={() => setStock(s => s+1)} className="w-12 h-12 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 text-gray-700"><Plus size={24}/></button>
                                 </div>
                             </div>
 
-                            <div>
-                                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Código de Barras</label>
-                                <input type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 font-mono text-gray-700 focus:ring-2 focus:ring-brand-500 outline-none" placeholder="Escanea o escribe..." />
-                            </div>
+                            <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Código de Barras</label><input type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 font-mono text-gray-700 focus:ring-2 focus:ring-brand-500 outline-none" placeholder="Escanea o escribe..." /></div>
 
                             <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Marca</label>
-                                    <input type="text" value={brand} onChange={(e) => setBrand(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none" placeholder="Ej. FV" required />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Modelo</label>
-                                    <input type="text" value={model} onChange={(e) => setModel(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none" placeholder="Ej. Arizona" required />
-                                </div>
+                                <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Marca</label><input type="text" value={brand} onChange={(e) => setBrand(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none" placeholder="Ej. FV" required /></div>
+                                <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Modelo</label><input type="text" value={model} onChange={(e) => setModel(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none" placeholder="Ej. Arizona" required /></div>
                             </div>
 
                             <div className="flex justify-end">
@@ -770,72 +592,37 @@
                                 </button>
                             </div>
                             
-                            {/* SECCION PRECIO ML */}
                             <div className="bg-white border-2 border-ml-yellow/30 rounded-xl p-3 shadow-sm">
                                 <label className="block text-xs font-bold text-ml-blue uppercase tracking-wider mb-1">Precio Referencia (MercadoLibre)</label>
                                 <div className="flex gap-2">
                                     <div className="relative flex-1">
                                         <div className="absolute left-3 top-1/2 -translate-y-1/2 text-ml-blue font-bold">$</div>
-                                        <input 
-                                            type="number" 
-                                            value={mlPrice} 
-                                            onChange={(e) => setMlPrice(e.target.value === '' ? '' : Number(e.target.value))} 
-                                            className="w-full pl-6 pr-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-ml-yellow outline-none bg-white text-gray-900 font-bold" 
-                                            placeholder="0" 
-                                        />
+                                        <input type="number" value={mlPrice} onChange={(e) => setMlPrice(e.target.value === '' ? '' : Number(e.target.value))} className="w-full pl-6 pr-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-ml-yellow outline-none bg-white text-gray-900 font-bold" placeholder="0" />
                                     </div>
-                                    <button 
-                                        type="button" 
-                                        onClick={handlePriceCheck} 
-                                        disabled={isPriceLoading} 
-                                        className="bg-ml-yellow text-ml-blue px-4 py-2 rounded-lg hover:brightness-95 transition-all flex items-center gap-2 font-bold shadow-sm disabled:opacity-70 disabled:cursor-not-allowed"
-                                        style={{ backgroundColor: '#ffe600', color: '#2d3277' }}
-                                    >
-                                        {isPriceLoading ? <Loader2 className="animate-spin" size={18} /> : <Search size={18} />}
-                                        <span className="hidden sm:inline">Buscar Precio</span>
+                                    <button type="button" onClick={handlePriceCheck} disabled={isPriceLoading} className="bg-ml-yellow text-ml-blue px-4 py-2 rounded-lg hover:brightness-95 transition-all flex items-center gap-2 font-bold shadow-sm disabled:opacity-70 disabled:cursor-not-allowed" style={{ backgroundColor: '#ffe600', color: '#2d3277' }}>
+                                        {isPriceLoading ? <Loader2 className="animate-spin" size={18} /> : <Search size={18} />} <span className="hidden sm:inline">Buscar</span>
                                     </button>
                                 </div>
-                                <div className="mt-2 text-right text-xs font-bold text-gray-500">
-                                    Valor Total: ${new Intl.NumberFormat('es-AR').format(itemTotalValue)}
-                                </div>
+                                <div className="mt-2 text-right text-xs font-bold text-gray-500">Valor Total: ${new Intl.NumberFormat('es-AR').format(itemTotalValue)}</div>
                             </div>
 
                             <div>
                                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Etiquetas</label>
                                 <div className="p-2 border border-gray-200 rounded-xl bg-white focus-within:ring-2 focus-within:ring-brand-500 transition-all flex flex-wrap gap-2 min-h-[50px]">
-                                    {tags.map(tag => (
-                                        <span key={tag} className="tag-chip bg-brand-50 text-brand-700 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1">
-                                            {tag}
-                                            <button onClick={() => removeTag(tag)} className="hover:text-brand-900 rounded-full p-0.5"><X size={14}/></button>
-                                        </span>
-                                    ))}
-                                    <input type="text" value={currentTag} onChange={(e) => setCurrentTag(e.target.value)} onKeyDown={handleTagKeyDown} className="flex-1 min-w-[100px] outline-none bg-transparent py-1" placeholder={tags.length === 0 ? "Escribe y Enter..." : ""} />
+                                    {tags.map(tag => (<span key={tag} className="tag-chip bg-brand-50 text-brand-700 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1">{tag}<button onClick={() => removeTag(tag)} className="hover:text-brand-900 rounded-full p-0.5"><X size={14}/></button></span>))}
+                                    <input type="text" value={currentTag} onChange={(e) => setCurrentTag(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); const val = currentTag.trim(); if (val && !tags.includes(val)) { setTags([...tags, val]); setCurrentTag(''); } } }} className="flex-1 min-w-[100px] outline-none bg-transparent py-1" placeholder={tags.length === 0 ? "Escribe y Enter..." : ""} />
                                 </div>
                             </div>
 
                             <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Ubicación</label>
-                                    <input type="text" value={location} onChange={(e) => setLocation(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl" placeholder="Ej. Cocina" />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tipo Instalación</label>
-                                    <input type="text" value={installType} onChange={(e) => setInstallType(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl" placeholder="Ej. Pared" />
-                                </div>
+                                <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Ubicación</label><input type="text" value={location} onChange={(e) => setLocation(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl" placeholder="Ej. Cocina" /></div>
+                                <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tipo Instalación</label><input type="text" value={installType} onChange={(e) => setInstallType(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl" placeholder="Ej. Pared" /></div>
                             </div>
-                            <div>
-                                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Detalles</label>
-                                <textarea value={details} onChange={(e) => setDetails(e.target.value)} rows={2} className="w-full p-3 border border-gray-200 rounded-xl resize-none" placeholder="Características..."></textarea>
-                            </div>
+                            <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Detalles</label><textarea value={details} onChange={(e) => setDetails(e.target.value)} rows={2} className="w-full p-3 border border-gray-200 rounded-xl resize-none" placeholder="Características..."></textarea></div>
                         </div>
                         <div className="p-4 border-t bg-gray-50 rounded-b-2xl flex flex-col gap-3">
-                            <button onClick={handleSubmit} disabled={isSaving} className={`w-full text-white py-4 px-4 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 disabled:opacity-70 ${mode === 'out' ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-600 hover:bg-brand-700'}`}>
-                                {isSaving ? <Loader2 className="animate-spin" size={20} /> : <Save size={20} />} 
-                                {isSaving ? 'Guardando...' : 'Confirmar Cambios'}
-                            </button>
-                            {existingItem && (
-                                <button onClick={handleDelete} className="w-full bg-white text-red-500 py-3 px-4 rounded-xl font-medium border border-red-100 hover:bg-red-50 flex items-center justify-center gap-2"><Trash2 size={18} /> Eliminar Producto</button>
-                            )}
+                            <button onClick={handleSubmit} disabled={isSaving} className={`w-full text-white py-4 px-4 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 disabled:opacity-70 ${mode === 'out' ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-600 hover:bg-brand-700'}`}>{isSaving ? <Loader2 className="animate-spin" size={20} /> : <Save size={20} />} {isSaving ? 'Guardando...' : 'Confirmar Cambios'}</button>
+                            {existingItem && (<button onClick={() => { if(confirm("¿Eliminar?")) onDelete(barcode); }} className="w-full bg-white text-red-500 py-3 px-4 rounded-xl font-medium border border-red-100 hover:bg-red-50 flex items-center justify-center gap-2"><Trash2 size={18} /> Eliminar Producto</button>)}
                         </div>
                     </div>
                 </div>
@@ -848,7 +635,7 @@
             const [showActionModal, setShowActionModal] = useState(false);
             const [showValuationModal, setShowValuationModal] = useState(false);
             const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-            const [scanConfirmation, setScanConfirmation] = useState(null); // Nuevo estado para confirmación
+            const [scanConfirmation, setScanConfirmation] = useState(null);
             const [items, setItems] = useState([]);
             const [scannedData, setScannedData] = useState(null);
             const [editingItem, setEditingItem] = useState(undefined);
@@ -857,33 +644,20 @@
             const [errorMessage, setErrorMessage] = useState(null); 
             const [isAnalyzingPhoto, setIsAnalyzingPhoto] = useState(false);
             const [isSyncing, setIsSyncing] = useState(false);
-            
             const lastScanRef = useRef(0);
             const scanLockRef = useRef(false);
             const photoInputRef = useRef(null);
 
             useEffect(() => {
-                const localData = getInventory();
-                setItems(localData);
-
-                // Verificar si existe API Key
-                const existingKey = localStorage.getItem(API_KEY_STORAGE);
-                if (!existingKey) {
-                    setShowApiKeyModal(true);
-                }
-
+                setItems(getInventory());
+                if (!localStorage.getItem(API_KEY_STORAGE)) setShowApiKeyModal(true);
                 const autoSync = async () => {
                     if (APPS_SCRIPT_URL) {
                         setIsSyncing(true);
                         try {
                             const cloudData = await fetchInventoryFromCloud();
-                            if (cloudData && Array.isArray(cloudData)) {
-                                saveInventory(cloudData);
-                                setItems(cloudData);
-                            }
-                        } catch (e) { console.error(e); } finally {
-                            setIsSyncing(false);
-                        }
+                            if (cloudData) { saveInventory(cloudData); setItems(cloudData); }
+                        } catch (e) { console.error(e); } finally { setIsSyncing(false); }
                     }
                 };
                 autoSync();
@@ -898,183 +672,67 @@
                 setIsSyncing(true);
                 showToast("Sincronizando...", "info");
                 const cloudData = await fetchInventoryFromCloud();
-                if (cloudData) {
-                    saveInventory(cloudData);
-                    setItems(cloudData);
-                    showToast("Actualizado", "success");
-                } else {
-                    showToast("Error de conexión.", "error");
-                }
+                if (cloudData) { saveInventory(cloudData); setItems(cloudData); showToast("Actualizado", "success"); } 
+                else { showToast("Error de conexión.", "error"); }
                 setIsSyncing(false);
             };
 
-            const openSelectionModal = (mode) => {
-                setActionMode(mode);
-                setShowActionModal(true);
-            };
-
-            const triggerScanner = () => {
-                setShowActionModal(false);
-                setViewMode('scanner');
-                scanLockRef.current = false;
-                lastScanRef.current = 0;
-            };
-
-            const triggerPhoto = () => {
-                setShowActionModal(false);
-                photoInputRef.current?.click();
-            };
+            const triggerScanner = () => { setShowActionModal(false); setViewMode('scanner'); scanLockRef.current = false; lastScanRef.current = 0; };
+            const triggerPhoto = () => { setShowActionModal(false); photoInputRef.current?.click(); };
 
             const handleScanSuccess = async (code) => {
-                const now = Date.now();
-                if (scanLockRef.current || (now - lastScanRef.current < 2000)) return;
-                
-                lastScanRef.current = now;
+                if (scanLockRef.current || (Date.now() - lastScanRef.current < 2000)) return;
+                lastScanRef.current = Date.now();
                 scanLockRef.current = true;
-                
                 if (navigator.vibrate) navigator.vibrate(100);
-
                 const existing = getItemByBarcode(code);
-                
-                if ((actionMode === 'in' || actionMode === 'out')) {
-                    // Lógica Modificada: En vez de actuar directo, pedimos confirmación
-                    setScanConfirmation({ code, item: existing, type: actionMode });
-                    // No desbloqueamos el escáner todavía para evitar lecturas múltiples de fondo
-                    return; 
-                }
-
-                setViewMode('list'); 
-                
-                if (actionMode === 'out' && !existing) {
-                    showToast("Producto no encontrado en inventario", "error");
-                    scanLockRef.current = false;
-                    return;
-                }
-
+                if ((actionMode === 'in' || actionMode === 'out')) { setScanConfirmation({ code, item: existing, type: actionMode }); return; }
+                setViewMode('list');
+                if (actionMode === 'out' && !existing) { showToast("No encontrado", "error"); scanLockRef.current = false; return; }
                 setScannedData({ barcode: code });
                 setEditingItem(existing); 
                 setViewMode('form');
-                
-                if (existing) showToast(`Producto encontrado: ${existing.brand}`, 'info');
-                else showToast('Nuevo producto detectado', 'info');
-                
                 scanLockRef.current = false;
             };
 
             const handleConfirmScan = async () => {
                 if (!scanConfirmation) return;
-
                 const { code, item: existing, type } = scanConfirmation;
-                
                 if (!existing) {
-                    // Si no existe y estamos en modo confirmar, debería ser IN (porque OUT bloquea antes si no existe, 
-                    // salvo que sea una lógica futura, pero asumimos IN crea nuevo).
-                    // Para simplificar, si no existe en IN/OUT rápido, redirigimos al formulario para crearlo.
-                     setViewMode('list');
-                     setScannedData({ barcode: code });
-                     setEditingItem(undefined);
-                     setViewMode('form');
-                     showToast("Producto nuevo. Complete los datos.", "info");
-                     setScanConfirmation(null);
-                     scanLockRef.current = false;
-                     return;
+                     setViewMode('list'); setScannedData({ barcode: code }); setEditingItem(undefined); setViewMode('form');
+                     showToast("Nuevo producto", "info"); setScanConfirmation(null); scanLockRef.current = false; return;
                 }
-
                 const change = type === 'in' ? 1 : -1;
-                const currentStock = parseInt(existing.stock || 0, 10);
-                const newStock = Math.max(0, currentStock + change);
-                
-                if (currentStock === 0 && change === -1) {
-                    showToast(`El stock ya es 0 para ${existing.brand}`, 'error');
-                } else {
-                    const updatedItem = { 
-                        ...existing, 
-                        stock: newStock, 
-                        lastUpdated: new Date().toISOString() 
-                    };
-
-                    await addOrUpdateItem(updatedItem);
-                    setItems(getInventory()); 
-
-                    const typeText = type === 'in' ? 'ENTRADA' : 'SALIDA';
-                    showToast(`${typeText}: ${existing.brand} ${existing.model} (Stock: ${newStock})`, type === 'in' ? 'success' : 'error');
-                }
-                
+                const newStock = Math.max(0, parseInt(existing.stock || 0, 10) + change);
+                await addOrUpdateItem({ ...existing, stock: newStock, lastUpdated: new Date().toISOString() });
+                setItems(getInventory());
+                showToast(`Stock actualizado: ${newStock}`, type === 'in' ? 'success' : 'error');
                 setScanConfirmation(null);
-                // Pequeño delay para que el usuario quite el producto del frente de la cámara
                 setTimeout(() => { scanLockRef.current = false; }, 1000);
-            };
-
-            const handleCancelScan = () => {
-                setScanConfirmation(null);
-                setTimeout(() => { scanLockRef.current = false; }, 500);
             };
 
             const handlePhotoUpload = async (e) => {
                 if (e.target.files.length === 0) return;
-                const imageFile = e.target.files[0];
                 setIsAnalyzingPhoto(true);
                 try {
-                    const aiData = await analyzeImageForProduct(imageFile);
+                    const aiData = await analyzeImageForProduct(e.target.files[0]);
                     if (aiData) {
                         const finalBarcode = aiData.barcode || `AUTO-${Date.now().toString().slice(-6)}`;
                         const existing = getItemByBarcode(finalBarcode);
-
-                        if (actionMode === 'out' && !existing) {
-                            showToast("Producto no encontrado. No se puede retirar.", "error");
-                            setIsAnalyzingPhoto(false);
-                            return;
-                        }
-
                         setScannedData({ ...aiData, barcode: finalBarcode });
                         setEditingItem(existing);
                         setViewMode('form');
-                        showToast(existing ? "Producto identificado" : "Nuevo producto detectado", "success");
-                    } else { showToast("No se pudo identificar el producto", "error"); }
+                    }
                 } catch (error) {
-                    let msg = error.message || 'Error desconocido';
-                    if (msg.includes('leaked') || msg.includes('403') || msg.includes('API key')) {
-                        setErrorMessage(`⛔ Error de API: ${msg}`);
-                    } else { showToast(msg, "error"); }
-                } finally {
-                    setIsAnalyzingPhoto(false);
-                    if (photoInputRef.current) photoInputRef.current.value = '';
-                }
-            };
-
-            const handleSaveItem = async (item) => {
-                await addOrUpdateItem(item);
-                setItems(getInventory());
-                setViewMode('list');
-                setEditingItem(undefined);
-                setScannedData(null);
-                showToast('Cambios guardados', 'success');
-            };
-
-            const handleDeleteItem = async (barcode) => {
-                const newItems = await deleteItem(barcode);
-                setItems(newItems);
-                setViewMode('list');
-                showToast('Producto eliminado', 'success');
-            };
-
-            const openProductDetail = (item) => {
-                setActionMode('view'); 
-                setScannedData({ barcode: item.barcode });
-                setEditingItem(item);
-                setViewMode('form');
+                     const msg = error.message || '';
+                     if (msg.includes('429')) setErrorMessage("⚠️ Límite de IA excedido (429). Espera un momento.");
+                     else setErrorMessage("Error en análisis de imagen: " + msg);
+                } finally { setIsAnalyzingPhoto(false); }
             };
 
             const filteredItems = items.filter(i => {
                 const q = searchQuery.toLowerCase();
-                const inTags = i.tags && Array.isArray(i.tags) && i.tags.some(t => t.toLowerCase().includes(q));
-                return (
-                    (i.brand || '').toLowerCase().includes(q) || 
-                    (i.model || '').toLowerCase().includes(q) ||
-                    (i.barcode || '').includes(q) ||
-                    (i.location || '').toLowerCase().includes(q) ||
-                    inTags
-                );
+                return (i.brand || '').toLowerCase().includes(q) || (i.model || '').toLowerCase().includes(q) || (i.barcode || '').includes(q);
             });
 
             return (
@@ -1086,72 +744,43 @@
                                 <h1 className="text-xl font-bold tracking-tight text-gray-800">Control de Stock</h1>
                             </div>
                             <div className="flex gap-2 items-center">
-                                <button onClick={() => setShowApiKeyModal(true)} className="p-2 text-brand-600 bg-brand-50 rounded-full hover:bg-brand-100 transition-colors">
-                                    <Key size={20} />
-                                </button>
-                                <button onClick={() => setShowValuationModal(true)} className="p-2 text-emerald-600 bg-emerald-50 rounded-full hover:bg-emerald-100 transition-colors">
-                                    <DollarSign size={20} />
-                                </button>
-                                <button onClick={handleCloudRefresh} disabled={isSyncing} className={`p-2 rounded-full text-gray-500 hover:bg-gray-100 transition-all ${isSyncing ? 'animate-spin' : ''}`}>
-                                    <RefreshCw size={20} />
-                                </button>
-                                <a href={SHEETS_URL} target="_blank" rel="noopener noreferrer" className="p-2 text-green-600 bg-green-50 rounded-full hover:bg-green-100 transition-colors"><Sheet size={20} /></a>
+                                <button onClick={() => setShowApiKeyModal(true)} className="p-2 text-brand-600 bg-brand-50 rounded-full hover:bg-brand-100"><Key size={20} /></button>
+                                <button onClick={() => setShowValuationModal(true)} className="p-2 text-emerald-600 bg-emerald-50 rounded-full hover:bg-emerald-100"><DollarSign size={20} /></button>
+                                <button onClick={handleCloudRefresh} disabled={isSyncing} className={`p-2 rounded-full text-gray-500 hover:bg-gray-100 ${isSyncing ? 'animate-spin' : ''}`}><RefreshCw size={20} /></button>
+                                <a href={SHEETS_URL} target="_blank" className="p-2 text-green-600 bg-green-50 rounded-full hover:bg-green-100"><Sheet size={20} /></a>
                             </div>
                         </div>
                     </header>
                     <main>
                         {viewMode === 'list' && (
                             <div className="pt-6 max-w-4xl mx-auto px-4">
-                                <div className="relative mb-6">
-                                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-                                    <input type="text" placeholder="Buscar producto..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none shadow-sm" />
+                                <div className="relative mb-6"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} /><input type="text" placeholder="Buscar producto..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none shadow-sm" /></div>
+                                <div className="space-y-3 pb-24">
+                                    {filteredItems.map(item => (
+                                        <div key={item.barcode} onClick={() => { setActionMode('view'); setScannedData({ barcode: item.barcode }); setEditingItem(item); setViewMode('form'); }} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all cursor-pointer relative group flex gap-4 items-center">
+                                            <div className="w-12 h-12 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center shrink-0"><Package size={24} /></div>
+                                            <div className="flex-1 min-w-0"><h4 className="font-bold text-gray-900 truncate text-lg">{item.brand} {item.model}</h4><p className="text-xs text-gray-500 font-mono truncate">{item.barcode}</p></div>
+                                            <div className="text-center px-2 flex flex-col items-end"><span className="block text-2xl font-bold text-gray-800">{item.stock}</span><span className="text-[10px] text-gray-400 uppercase font-bold">Stock</span>{item.mlPrice > 0 && <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 px-1 rounded mt-1">${item.mlPrice}</span>}</div>
+                                        </div>
+                                    ))}
                                 </div>
-                                {filteredItems.length === 0 ? (
-                                    <div className="text-center py-20 text-gray-400"><Package size={48} className="mx-auto mb-4 opacity-20" /><p>No se encontraron productos.</p></div>
-                                ) : (
-                                    <div className="space-y-3 pb-24">
-                                        {filteredItems.map(item => (
-                                            <div key={item.barcode} onClick={() => openProductDetail(item)} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all cursor-pointer relative group flex gap-4 items-center">
-                                                <div className="w-12 h-12 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center shrink-0"><Package size={24} /></div>
-                                                <div className="flex-1 min-w-0">
-                                                    <h4 className="font-bold text-gray-900 truncate text-lg">{item.brand} {item.model}</h4>
-                                                    <p className="text-xs text-gray-500 font-mono truncate">{item.barcode}</p>
-                                                    <div className="flex flex-wrap gap-1 mt-1">
-                                                        {item.tags && item.tags.slice(0, 3).map(t => (<span key={t} className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{t}</span>))}
-                                                    </div>
-                                                </div>
-                                                <div className="text-center px-2 flex flex-col items-end">
-                                                    <span className="block text-2xl font-bold text-gray-800">{item.stock}</span>
-                                                    <span className="text-[10px] text-gray-400 uppercase font-bold">Stock</span>
-                                                    {item.mlPrice > 0 && <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 px-1 rounded mt-1">${item.mlPrice}</span>}
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
                                 <div className="fixed bottom-6 right-6 flex flex-col gap-4 z-30">
-                                    <button onClick={() => openSelectionModal('in')} className="w-16 h-16 bg-green-600 text-white rounded-full shadow-xl shadow-green-600/30 flex items-center justify-center hover:bg-green-700 active:scale-95 transition-all"><ArrowUp size={32} /></button>
-                                    <button onClick={() => openSelectionModal('out')} className="w-16 h-16 bg-red-600 text-white rounded-full shadow-xl shadow-red-600/30 flex items-center justify-center hover:bg-red-700 active:scale-95 transition-all"><ArrowDown size={32} /></button>
+                                    <button onClick={() => { setActionMode('in'); setShowActionModal(true); }} className="w-16 h-16 bg-green-600 text-white rounded-full shadow-xl flex items-center justify-center"><ArrowUp size={32} /></button>
+                                    <button onClick={() => { setActionMode('out'); setShowActionModal(true); }} className="w-16 h-16 bg-red-600 text-white rounded-full shadow-xl flex items-center justify-center"><ArrowDown size={32} /></button>
                                 </div>
                             </div>
                         )}
                     </main>
-                    {isAnalyzingPhoto && (
-                        <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center text-white backdrop-blur-md">
-                            <div className="relative"><Sparkles size={64} className="text-purple-400 animate-pulse" /><div className="absolute inset-0 bg-purple-500/20 blur-xl rounded-full animate-ping"></div></div>
-                            <p className="text-2xl font-bold mt-6">Analizando Imagen</p>
-                            <p className="text-gray-400 mt-2 text-center max-w-xs">Procesando...</p>
-                        </div>
-                    )}
-                    <input type="file" ref={photoInputRef} className="hidden" accept="image/*" capture="environment" onChange={handlePhotoUpload} />
+                    {isAnalyzingPhoto && <div className="fixed inset-0 z-50 bg-black/80 flex flex-col items-center justify-center text-white backdrop-blur-md"><Sparkles size={64} className="animate-pulse" /><p className="mt-4">Analizando...</p></div>}
+                    <input type="file" ref={photoInputRef} className="hidden" accept="image/*" onChange={handlePhotoUpload} />
                     {errorMessage && <ErrorModal message={errorMessage} onClose={() => setErrorMessage(null)} />}
                     {showActionModal && <SelectionModal mode={actionMode} onScan={triggerScanner} onPhoto={triggerPhoto} onClose={() => setShowActionModal(false)} />}
                     {showValuationModal && <ValuationModal items={items} onClose={() => setShowValuationModal(false)} />}
                     {showApiKeyModal && <ApiKeyModal onClose={() => setShowApiKeyModal(false)} />}
-                    {scanConfirmation && <ScanConfirmationModal data={scanConfirmation} type={scanConfirmation.type} onConfirm={handleConfirmScan} onCancel={handleCancelScan} />}
+                    {scanConfirmation && <ScanConfirmationModal data={scanConfirmation} type={scanConfirmation.type} onConfirm={handleConfirmScan} onCancel={() => { setScanConfirmation(null); setTimeout(() => { scanLockRef.current = false; }, 500); }} />}
                     {viewMode === 'scanner' && <Scanner onScanSuccess={handleScanSuccess} onClose={() => setViewMode('list')} mode={actionMode} />}
-                    {viewMode === 'form' && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onDelete={handleDeleteItem} onCancel={() => setViewMode('list')} mode={actionMode} />}
-                    {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl text-white font-medium text-sm transition-all animate-bounce z-50 flex items-center gap-2 max-w-[90vw] text-center ${toast.type === 'error' ? 'bg-red-500' : 'bg-gray-900'}`}>{toast.type === 'success' && <div className="w-2 h-2 rounded-full bg-green-400 shrink-0"></div>}{toast.msg}</div>}
+                    {viewMode === 'form' && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={async (item) => { await addOrUpdateItem(item); setItems(getInventory()); setViewMode('list'); showToast('Guardado', 'success'); }} onDelete={async (bc) => { const n = await deleteItem(bc); setItems(n); setViewMode('list'); showToast('Eliminado', 'success'); }} onCancel={() => setViewMode('list')} mode={actionMode} onError={(msg) => setErrorMessage(msg)} />}
+                    {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl text-white font-medium text-sm transition-all animate-bounce z-50 flex items-center gap-2 max-w-[90vw] text-center ${toast.type === 'error' ? 'bg-red-500' : 'bg-gray-900'}`}>{toast.msg}</div>}
                 </div>
             );
         };
