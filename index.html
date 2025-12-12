@@ -344,7 +344,7 @@
                         <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4 shrink-0">
                             <AlertTriangle className="text-red-600" size={32} />
                         </div>
-                        <h3 className="text-lg font-bold text-gray-900 mb-2 shrink-0">Error Detectado</h3>
+                        <h3 className="text-lg font-bold text-gray-900 mb-2 shrink-0">Atención</h3>
                         <div className="overflow-y-auto mb-6 w-full custom-scrollbar max-h-[40vh]">
                             <p className="text-gray-600 break-words text-sm leading-relaxed whitespace-pre-wrap">{message}</p>
                         </div>
@@ -619,7 +619,7 @@
             );
         };
 
-        const ProductForm = ({ initialData, existingItem, onSave, onDelete, onCancel, mode }) => {
+        const ProductForm = ({ initialData, existingItem, onSave, onDelete, onCancel, mode, onError }) => {
             const [barcode, setBarcode] = useState(initialData?.barcode || '');
             const [brand, setBrand] = useState(existingItem?.brand || initialData?.brand || '');
             const [model, setModel] = useState(existingItem?.model || initialData?.model || '');
@@ -673,7 +673,7 @@
                  }
 
                  if (queryParts.length === 0) {
-                     alert("Ingresa al menos una Marca y Modelo para buscar el precio.");
+                     onError("Ingresa al menos una Marca y Modelo para buscar el precio.");
                      return;
                  }
 
@@ -684,10 +684,15 @@
                      if (price && price > 0) {
                          setMlPrice(price);
                      } else {
-                         alert("No se pudo encontrar un precio automático. Verifica los datos o intenta ser más específico en el Modelo.");
+                         onError("No se pudo encontrar un precio automático. Verifica los datos o intenta ser más específico en el Modelo.");
                      }
                  } catch (e) {
-                     alert("Error buscando precio: " + e.message);
+                     const msg = e.toString();
+                     if (msg.includes("429") || msg.includes("quota")) {
+                         onError("⚠️ Error 429: Cuota excedida de Google Gemini. Espera un minuto.\n\n" + msg);
+                     } else {
+                         onError("Error buscando precio: " + msg);
+                     }
                  } finally {
                      setIsPriceLoading(false);
                  }
@@ -1032,10 +1037,12 @@
                         showToast(existing ? "Producto identificado" : "Nuevo producto detectado", "success");
                     } else { showToast("No se pudo identificar el producto", "error"); }
                 } catch (error) {
-                    let msg = error.message || 'Error desconocido';
-                    if (msg.includes('leaked') || msg.includes('403') || msg.includes('API key')) {
-                        setErrorMessage(`⛔ Error de API: ${msg}`);
-                    } else { showToast(msg, "error"); }
+                    let msg = error.message || error.toString();
+                    if (msg.includes('429') || msg.includes('quota')) {
+                        setErrorMessage("⚠️ Límite de IA excedido (429). Por favor espera un minuto.\n\n" + msg);
+                    } else {
+                        setErrorMessage("Error analizando imagen: " + msg);
+                    }
                 } finally {
                     setIsAnalyzingPhoto(false);
                     if (photoInputRef.current) photoInputRef.current.value = '';
@@ -1150,7 +1157,7 @@
                     {showApiKeyModal && <ApiKeyModal onClose={() => setShowApiKeyModal(false)} />}
                     {scanConfirmation && <ScanConfirmationModal data={scanConfirmation} type={scanConfirmation.type} onConfirm={handleConfirmScan} onCancel={handleCancelScan} />}
                     {viewMode === 'scanner' && <Scanner onScanSuccess={handleScanSuccess} onClose={() => setViewMode('list')} mode={actionMode} />}
-                    {viewMode === 'form' && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onDelete={handleDeleteItem} onCancel={() => setViewMode('list')} mode={actionMode} />}
+                    {viewMode === 'form' && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onDelete={handleDeleteItem} onCancel={() => setViewMode('list')} mode={actionMode} onError={(msg) => setErrorMessage(msg)} />}
                     {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl text-white font-medium text-sm transition-all animate-bounce z-50 flex items-center gap-2 max-w-[90vw] text-center ${toast.type === 'error' ? 'bg-red-500' : 'bg-gray-900'}`}>{toast.type === 'success' && <div className="w-2 h-2 rounded-full bg-green-400 shrink-0"></div>}{toast.msg}</div>}
                 </div>
             );
