@@ -297,23 +297,38 @@
         const getMercadoLibrePrice = async (query) => {
              try {
                 const ai = getAiInstance();
-                // Usamos Google Search Grounding para buscar el precio en tiempo real
+                // Prompt ingeniería para evitar alucinaciones con cuotas o envíos
+                const prompt = `
+                Actúa como un asistente de compras experto en Argentina.
+                Objetivo: Encontrar el precio de mercado actual en Pesos Argentinos (ARS) para: "${query}".
+                
+                Instrucciones:
+                1. Usa Google Search para buscar este producto ESPECÍFICAMENTE en el sitio 'mercadolibre.com.ar'.
+                2. Busca el precio de un producto NUEVO. Ignora usados.
+                3. CRÍTICO: Debes distinguir el precio total del valor de las "cuotas". NO confundas "12x $5.000" con un precio de $5.000. El precio real sería aprox $60.000.
+                4. Ignora costos de envío.
+                5. Si hay varios resultados, descarta los muy baratos (repuestos/accesorios) y toma un promedio de los precios coherentes del producto principal.
+                6. Tu respuesta final debe ser SOLAMENTE un número entero representando el precio en ARS (sin puntos ni símbolos). Ejemplo: 154000.
+                Si no encuentras nada confiable, responde: 0.
+                `;
+
                 const response = await ai.models.generateContent({
                     model: "gemini-2.5-flash",
-                    contents: `Busca en mercadolibre.com.ar el precio de venta más bajo para el producto nuevo: "${query}". 
-                    Importante: Ignora productos usados y repuestos sueltos si el término de búsqueda parece un producto completo.
-                    Tu respuesta debe contener SOLO el número del precio estimado (sin signos de moneda, ni puntos de mil, solo dígitos). 
-                    Si no encuentras un precio exacto, estima basado en los resultados.
-                    Ejemplo de respuesta ideal: 15400`,
+                    contents: prompt,
                     config: {
                         tools: [{ googleSearch: {} }]
                     }
                 });
                 
-                const text = response.text;
-                // Extraemos el primer número que parezca un precio
-                const match = text.match(/(\d+)/); 
-                return match ? parseInt(match[0], 10) : null;
+                const text = response.text || "";
+                
+                // Limpieza agresiva para encontrar el número más probable
+                // Eliminamos posibles textos de cuotas "12x" o "6 cuotas" antes de buscar números
+                const cleanText = text.replace(/(\d+)\s*(x|cuotas)/gi, ''); 
+                
+                // Buscamos el primer número de al menos 3 dígitos (para evitar "12" cuotas, pero permitir precios bajos reales)
+                const match = cleanText.match(/(\d{3,})/); 
+                return match ? parseInt(match[0], 10) : 0;
              } catch (e) {
                  console.error("Error buscando precio:", e);
                  throw e;
@@ -639,15 +654,21 @@
             };
 
             const handlePriceCheck = async () => {
-                 // Construimos la query usando estrictamente los valores actuales del estado (lo que el usuario ha escrito/corregido)
                  const queryParts = [];
+                 // Prioridad a Marca y Modelo
                  if (brand) queryParts.push(brand);
                  if (model) queryParts.push(model);
+                 
+                 // Detalles importantes para ferretería/hogar
+                 if (installType) queryParts.push(installType);
+                 if (location) queryParts.push(location);
                  if (color) queryParts.push(color);
-                 if (details && details.length < 30) queryParts.push(details);
 
-                 // Si no hay suficiente info de texto, usamos el barcode como respaldo, pero preferimos el texto corregido.
-                 if (queryParts.length < 2 && barcode) {
+                 // Detalles adicionales con limite mayor
+                 if (details && details.length < 60) queryParts.push(details);
+
+                 // Si tenemos poco texto, agregamos el código de barras
+                 if (queryParts.length < 3 && barcode) {
                     queryParts.push(barcode);
                  }
 
@@ -660,10 +681,10 @@
                  setIsPriceLoading(true);
                  try {
                      const price = await getMercadoLibrePrice(query);
-                     if (price) {
+                     if (price && price > 0) {
                          setMlPrice(price);
                      } else {
-                         alert("No se pudo determinar un precio automático para: " + query);
+                         alert("No se pudo encontrar un precio automático. Verifica los datos o intenta ser más específico en el Modelo.");
                      }
                  } catch (e) {
                      alert("Error buscando precio: " + e.message);
@@ -727,12 +748,10 @@
                                 </div>
                             </div>
 
-                            {!existingItem && (
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Código de Barras</label>
-                                    <input type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 font-mono text-gray-700" placeholder="Escanea o escribe..." />
-                                </div>
-                            )}
+                            <div>
+                                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Código de Barras</label>
+                                <input type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 font-mono text-gray-700 focus:ring-2 focus:ring-brand-500 outline-none" placeholder="Escanea o escribe..." />
+                            </div>
 
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
