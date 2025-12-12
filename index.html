@@ -70,14 +70,14 @@
     <script type="text/babel" data-presets="react" data-type="module">
         import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
-        import { Scan, Plus, Search, Package, Sheet, ExternalLink, X, AlertCircle, Wand2, Save, Loader2, Camera, Image as ImageIcon, Sparkles, Cloud, CloudOff, RefreshCw, AlertTriangle, Minus, Trash2, Tag, Wifi } from 'https://esm.sh/lucide-react@0.344.0';
+        import { Scan, Plus, Search, Package, Sheet, ExternalLink, X, AlertCircle, Wand2, Save, Loader2, Camera, Image as ImageIcon, Sparkles, Cloud, CloudOff, RefreshCw, AlertTriangle, Minus, Trash2, Tag, Wifi, ArrowDownCircle, ArrowUpCircle, Home, List } from 'https://esm.sh/lucide-react@0.344.0';
         import { GoogleGenAI, Type } from 'https://esm.sh/@google/genai';
 
         // --- CONFIGURACIÓN Y CONSTANTES ---
         const SHEETS_URL = "https://docs.google.com/spreadsheets/d/11X8ZnPzmpA-gDXyHNYDc5yyjm8ztSzzm4IJsAvgw-ho/edit?gid=0#gid=0";
-        // URL del Script de Google Apps
+        // URL del Script de Google Apps (ACTUALIZADO)
         const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwo_aCQyDlqdr0TDzG0U4xRJF2OP7p_AZMfI1WBaLttc--XDIlEUj-nsAcmfrZBJdoo/exec"; 
-        const STORAGE_KEY = 'inventario_data_v3';
+        const STORAGE_KEY = 'inventario_data_v4';
         const API_KEY = "AIzaSyB3Oy5Yyqxxxtsx-mu6LgfEUmTqUaepyEY";
 
         // --- SERVICIOS ---
@@ -85,8 +85,14 @@
         const syncItemToSheets = async (item, action = 'update') => {
             if (!APPS_SCRIPT_URL) return false;
             try {
-                const payload = {
+                // Aseguramos que tags sea un array antes de enviar
+                const safeItem = {
                     ...item,
+                    tags: Array.isArray(item.tags) ? item.tags : []
+                };
+
+                const payload = {
+                    ...safeItem,
                     action: action, 
                     timestamp: new Date().toISOString()
                 };
@@ -131,21 +137,6 @@
         const getItemByBarcode = (barcode) => {
             const items = getInventory();
             return items.find(item => item.barcode === barcode);
-        };
-
-        const updateItemStock = async (barcode, delta) => {
-            const items = getInventory();
-            const index = items.findIndex(item => item.barcode === barcode);
-            
-            if (index !== -1) {
-                const newStock = Math.max(0, items[index].stock + delta);
-                items[index].stock = newStock;
-                items[index].lastUpdated = new Date().toISOString();
-                saveInventory(items);
-                await syncItemToSheets(items[index], 'update');
-                return items;
-            }
-            return items;
         };
 
         const deleteItem = async (barcode) => {
@@ -337,7 +328,7 @@
             );
         };
 
-        const ProductForm = ({ initialData, existingItem, onSave, onDelete, onCancel }) => {
+        const ProductForm = ({ initialData, existingItem, onSave, onDelete, onCancel, mode }) => {
             const [barcode, setBarcode] = useState(initialData?.barcode || '');
             const [brand, setBrand] = useState(existingItem?.brand || initialData?.brand || '');
             const [model, setModel] = useState(existingItem?.model || initialData?.model || '');
@@ -347,9 +338,12 @@
             const [details, setDetails] = useState(existingItem?.details || initialData?.details || '');
             const [tags, setTags] = useState(existingItem?.tags || initialData?.tags || []);
             const [currentTag, setCurrentTag] = useState('');
-            const [stock, setStock] = useState(existingItem?.stock || 1);
+            const [stock, setStock] = useState(existingItem?.stock || 0);
             const [isAiLoading, setIsAiLoading] = useState(false);
             const [isSaving, setIsSaving] = useState(false);
+
+            // Título dinámico
+            const formTitle = (brand && model) ? `${brand} ${model}` : (existingItem ? 'Producto Sin Nombre' : 'Nuevo Producto');
 
             const handleAiSuggest = async () => {
                 if (!brand || !model) return;
@@ -361,7 +355,6 @@
                     setLocation(suggestion.location || location);
                     setDetails(suggestion.details || details);
                     if (suggestion.tags && Array.isArray(suggestion.tags)) {
-                        // Merge tags unique
                         setTags([...new Set([...tags, ...suggestion.tags])]);
                     }
                 }
@@ -401,15 +394,41 @@
             return (
                 <div className="fixed inset-0 z-40 bg-gray-900/50 backdrop-blur-sm flex justify-center items-end sm:items-center p-0 sm:p-4">
                     <div className="bg-white w-full max-w-lg rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90vh]">
-                        <div className="p-4 border-b flex justify-between items-center">
-                            <h2 className="text-lg font-bold text-gray-800">{existingItem ? 'Editar Producto' : 'Nuevo Producto'}</h2>
-                            <button onClick={onCancel} className="text-gray-500 hover:bg-gray-100 p-2 rounded-full"><X size={24} /></button>
-                        </div>
-                        <div className="p-6 overflow-y-auto flex-1 space-y-4">
+                        <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-2xl">
                             <div>
-                                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Código de Barras</label>
-                                <input type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 font-mono text-gray-700" placeholder="Escanea o escribe..." />
+                                <h2 className="text-xl font-bold text-gray-800">{formTitle}</h2>
+                                <p className="text-xs text-gray-500 font-mono mt-0.5">{barcode}</p>
                             </div>
+                            <button onClick={onCancel} className="text-gray-500 hover:bg-gray-200 p-2 rounded-full"><X size={24} /></button>
+                        </div>
+                        
+                        <div className="p-6 overflow-y-auto flex-1 space-y-5">
+                            {/* Sección de Stock Destacada */}
+                            <div className={`p-4 rounded-xl border-2 ${mode === 'out' ? 'bg-red-50 border-red-100' : 'bg-green-50 border-green-100'} mb-4`}>
+                                <label className="block text-center text-sm font-bold uppercase tracking-wider mb-2 text-gray-600">
+                                    {mode === 'out' ? 'Retirar Stock' : (mode === 'in' ? 'Ingresar Stock' : 'Gestionar Stock')}
+                                </label>
+                                <div className="flex items-center justify-center gap-4">
+                                    <button type="button" onClick={() => setStock(s => Math.max(0, s-1))} className="w-12 h-12 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-all text-gray-700">
+                                        <Minus size={24}/>
+                                    </button>
+                                    <div className="flex flex-col items-center">
+                                        <input type="number" value={stock} onChange={(e) => setStock(Number(e.target.value))} className="w-24 text-center text-4xl font-bold bg-transparent outline-none text-gray-900" />
+                                        <span className="text-xs text-gray-400 font-medium uppercase">Unidades</span>
+                                    </div>
+                                    <button type="button" onClick={() => setStock(s => s+1)} className="w-12 h-12 bg-white rounded-full shadow-sm border border-gray-200 flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-all text-gray-700">
+                                        <Plus size={24}/>
+                                    </button>
+                                </div>
+                            </div>
+
+                            {!existingItem && (
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Código de Barras</label>
+                                    <input type="text" value={barcode} onChange={(e) => setBarcode(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 font-mono text-gray-700" placeholder="Escanea o escribe..." />
+                                </div>
+                            )}
+
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Marca</label>
@@ -420,15 +439,16 @@
                                     <input type="text" value={model} onChange={(e) => setModel(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none" placeholder="Ej. Arizona" required />
                                 </div>
                             </div>
+
                             <div className="flex justify-end">
                                 <button type="button" onClick={handleAiSuggest} disabled={isAiLoading || !brand || !model} className="flex items-center gap-2 text-xs font-medium text-brand-600 hover:text-brand-800 transition-colors">
-                                    {isAiLoading ? <Loader2 className="animate-spin" size={12} /> : <Wand2 size={12} />} Autocompletar Detalles con IA
+                                    {isAiLoading ? <Loader2 className="animate-spin" size={12} /> : <Wand2 size={12} />} Autocompletar con IA
                                 </button>
                             </div>
                             
                             {/* Sección Etiquetas */}
                             <div>
-                                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Etiquetas (Enter para agregar)</label>
+                                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Etiquetas</label>
                                 <div className="p-2 border border-gray-200 rounded-xl bg-white focus-within:ring-2 focus-within:ring-brand-500 transition-all flex flex-wrap gap-2 min-h-[50px]">
                                     {tags.map(tag => (
                                         <span key={tag} className="tag-chip bg-brand-50 text-brand-700 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1">
@@ -442,25 +462,11 @@
                                         onChange={(e) => setCurrentTag(e.target.value)} 
                                         onKeyDown={handleTagKeyDown}
                                         className="flex-1 min-w-[100px] outline-none bg-transparent py-1"
-                                        placeholder={tags.length === 0 ? "Ej. Oferta, Stock Bajo..." : ""}
+                                        placeholder={tags.length === 0 ? "Escribe y Enter..." : ""}
                                     />
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Color</label>
-                                    <input type="text" value={color} onChange={(e) => setColor(e.target.value)} className="w-full p-3 border border-gray-200 rounded-xl" placeholder="Ej. Cromo" />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Stock Actual</label>
-                                    <div className="flex items-center">
-                                        <button type="button" onClick={() => setStock(s => Math.max(0, s-1))} className="p-3 bg-gray-100 rounded-l-xl hover:bg-gray-200"><Minus size={16}/></button>
-                                        <input type="number" value={stock} onChange={(e) => setStock(Number(e.target.value))} className="w-full p-3 border-y border-gray-200 text-center font-bold" />
-                                        <button type="button" onClick={() => setStock(s => s+1)} className="p-3 bg-gray-100 rounded-r-xl hover:bg-gray-200"><Plus size={16}/></button>
-                                    </div>
-                                </div>
-                            </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Ubicación</label>
@@ -472,14 +478,14 @@
                                 </div>
                             </div>
                             <div>
-                                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Detalles Adicionales</label>
-                                <textarea value={details} onChange={(e) => setDetails(e.target.value)} rows={2} className="w-full p-3 border border-gray-200 rounded-xl resize-none" placeholder="Características extra..."></textarea>
+                                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Detalles</label>
+                                <textarea value={details} onChange={(e) => setDetails(e.target.value)} rows={2} className="w-full p-3 border border-gray-200 rounded-xl resize-none" placeholder="Características..."></textarea>
                             </div>
                         </div>
                         <div className="p-4 border-t bg-gray-50 rounded-b-2xl flex flex-col gap-3">
-                            <button onClick={handleSubmit} disabled={isSaving} className="w-full bg-brand-600 text-white py-4 px-4 rounded-xl font-bold shadow-lg hover:bg-brand-700 flex items-center justify-center gap-2 disabled:opacity-70">
+                            <button onClick={handleSubmit} disabled={isSaving} className={`w-full text-white py-4 px-4 rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 disabled:opacity-70 ${mode === 'out' ? 'bg-red-600 hover:bg-red-700' : 'bg-brand-600 hover:bg-brand-700'}`}>
                                 {isSaving ? <Loader2 className="animate-spin" size={20} /> : <Save size={20} />} 
-                                {isSaving ? 'Guardando...' : 'Guardar Cambios'}
+                                {isSaving ? 'Guardando...' : 'Confirmar Cambios'}
                             </button>
                             {existingItem && (
                                 <button onClick={handleDelete} className="w-full bg-white text-red-500 py-3 px-4 rounded-xl font-medium border border-red-100 hover:bg-red-50 flex items-center justify-center gap-2">
@@ -493,9 +499,10 @@
         };
 
         const App = () => {
+            const [viewMode, setViewMode] = useState('home'); // 'home', 'list', 'scanner', 'form'
+            const [actionMode, setActionMode] = useState('view'); // 'view', 'in', 'out'
+            
             const [items, setItems] = useState([]);
-            const [showScanner, setShowScanner] = useState(false);
-            const [showForm, setShowForm] = useState(false);
             const [scannedData, setScannedData] = useState(null);
             const [editingItem, setEditingItem] = useState(undefined);
             const [searchQuery, setSearchQuery] = useState('');
@@ -505,13 +512,9 @@
             const [initialSyncDone, setInitialSyncDone] = useState(false);
             const photoInputRef = useRef(null);
 
-            // Carga inicial y auto-sync
             useEffect(() => {
-                // 1. Cargar local
                 const localData = getInventory();
                 setItems(localData);
-
-                // 2. Sincronizar automáticamente con Sheets
                 const autoSync = async () => {
                     if (APPS_SCRIPT_URL) {
                         setIsSyncing(true);
@@ -520,17 +523,12 @@
                             if (cloudData && Array.isArray(cloudData)) {
                                 saveInventory(cloudData);
                                 setItems(cloudData);
-                                console.log("Auto-sync completado");
                             }
-                        } catch (e) {
-                            console.error("Fallo auto-sync", e);
-                        } finally {
+                        } catch (e) { console.error(e); } finally {
                             setIsSyncing(false);
                             setInitialSyncDone(true);
                         }
-                    } else {
-                        setInitialSyncDone(true);
-                    }
+                    } else { setInitialSyncDone(true); }
                 };
                 autoSync();
             }, []);
@@ -542,32 +540,50 @@
 
             const handleCloudRefresh = async () => {
                 setIsSyncing(true);
-                showToast("Sincronizando con Sheets...", "info");
+                showToast("Sincronizando...", "info");
                 const cloudData = await fetchInventoryFromCloud();
                 if (cloudData) {
                     saveInventory(cloudData);
                     setItems(cloudData);
-                    showToast("Datos actualizados desde la nube", "success");
+                    showToast("Actualizado", "success");
                 } else {
-                    showToast("Error de conexión con la nube.", "error");
+                    showToast("Error de conexión.", "error");
                 }
                 setIsSyncing(false);
             };
 
+            // Flujos de Acción
+            const startAction = (mode) => {
+                setActionMode(mode);
+                // Aquí podríamos mostrar un modal para elegir entre Foto o Escáner
+                // Por ahora, asumimos que el usuario quiere ver opciones, así que no hacemos nada hasta que elija en el UI
+            };
+
+            const triggerScanner = (mode) => {
+                setActionMode(mode);
+                setViewMode('scanner');
+            };
+
+            const triggerPhoto = (mode) => {
+                setActionMode(mode);
+                photoInputRef.current?.click();
+            };
+
             const handleScanSuccess = async (code) => {
-                setShowScanner(false);
+                setViewMode('home'); // Cerramos scanner visualmente
                 const existing = getItemByBarcode(code);
-                if (existing) {
-                    showToast(`Producto encontrado`, 'info');
-                    setEditingItem(existing);
-                    setScannedData({ barcode: code });
-                    setShowForm(true);
-                } else {
-                    setScannedData({ barcode: code });
-                    setEditingItem(undefined);
-                    setShowForm(true);
-                    showToast('Código nuevo detectado', 'info');
+                
+                if (actionMode === 'out' && !existing) {
+                    showToast("Producto no encontrado en inventario", "error");
+                    return;
                 }
+
+                setScannedData({ barcode: code });
+                setEditingItem(existing); // Será undefined si es nuevo (solo válido para 'in')
+                setViewMode('form');
+                
+                if (existing) showToast(`Producto encontrado: ${existing.brand}`, 'info');
+                else showToast('Nuevo producto detectado', 'info');
             };
 
             const handlePhotoUpload = async (e) => {
@@ -579,14 +595,17 @@
                     if (aiData) {
                         const finalBarcode = aiData.barcode || `AUTO-${Date.now().toString().slice(-6)}`;
                         const existing = getItemByBarcode(finalBarcode);
-                        if (existing) {
-                            showToast(`Producto encontrado`, 'info');
-                            setEditingItem(existing);
-                        } else {
-                            setEditingItem(undefined);
+
+                        if (actionMode === 'out' && !existing) {
+                            showToast("Producto no encontrado. No se puede retirar.", "error");
+                            setIsAnalyzingPhoto(false);
+                            return;
                         }
+
                         setScannedData({ ...aiData, barcode: finalBarcode });
-                        setShowForm(true);
+                        setEditingItem(existing);
+                        setViewMode('form');
+                        showToast(existing ? "Producto identificado" : "Nuevo producto detectado", "success");
                     } else {
                         showToast("No se pudo identificar el producto", "error");
                     }
@@ -601,26 +620,26 @@
             const handleSaveItem = async (item) => {
                 await addOrUpdateItem(item);
                 setItems(getInventory());
-                setShowForm(false);
+                setViewMode('list');
                 setEditingItem(undefined);
                 setScannedData(null);
-                showToast('Guardado correctamente', 'success');
+                showToast('Cambios guardados', 'success');
             };
 
             const handleDeleteItem = async (barcode) => {
                 const newItems = await deleteItem(barcode);
                 setItems(newItems);
-                setShowForm(false);
+                setViewMode('list');
                 showToast('Producto eliminado', 'success');
             };
 
-            const handleQuickStock = async (e, barcode, delta) => {
-                e.stopPropagation();
-                const newItems = await updateItemStock(barcode, delta);
-                setItems([...newItems]); 
+            const openProductDetail = (item) => {
+                setActionMode('view'); // Modo edición general
+                setScannedData({ barcode: item.barcode });
+                setEditingItem(item);
+                setViewMode('form');
             };
 
-            // Búsqueda profunda en todos los campos incluyendo tags
             const filteredItems = items.filter(i => {
                 const q = searchQuery.toLowerCase();
                 const inTags = i.tags && Array.isArray(i.tags) && i.tags.some(t => t.toLowerCase().includes(q));
@@ -629,23 +648,119 @@
                     (i.model || '').toLowerCase().includes(q) ||
                     (i.barcode || '').includes(q) ||
                     (i.location || '').toLowerCase().includes(q) ||
-                    (i.installType || '').toLowerCase().includes(q) ||
-                    (i.details || '').toLowerCase().includes(q) ||
                     inTags
                 );
             });
 
+            // VISTAS
+            const renderHome = () => (
+                <div className="flex flex-col h-full max-w-md mx-auto px-6 py-8 justify-center gap-6">
+                     <div className="text-center mb-8">
+                        <div className="w-16 h-16 bg-brand-600 rounded-2xl flex items-center justify-center text-white shadow-xl mx-auto mb-4">
+                            <Package size={32} />
+                        </div>
+                        <h1 className="text-3xl font-bold text-gray-800">Control de Stock</h1>
+                        <p className="text-gray-500">Gestiona tu inventario con IA</p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        {/* BOTÓN INGRESAR STOCK */}
+                        <div className="col-span-2 sm:col-span-1">
+                            <div className="bg-green-50 rounded-2xl p-4 border border-green-100 flex flex-col items-center gap-3 shadow-sm hover:shadow-md transition-all">
+                                <div className="p-3 bg-green-500 text-white rounded-xl shadow-lg shadow-green-200">
+                                    <ArrowDownCircle size={32} />
+                                </div>
+                                <h3 className="font-bold text-gray-800 text-lg">Ingresar Stock</h3>
+                                <div className="flex gap-2 w-full mt-2">
+                                    <button onClick={() => triggerScanner('in')} className="flex-1 bg-white py-2 rounded-lg text-sm font-medium text-green-700 border border-green-200 hover:bg-green-100 flex items-center justify-center gap-1">
+                                        <Scan size={16}/> Escáner
+                                    </button>
+                                    <button onClick={() => triggerPhoto('in')} className="flex-1 bg-white py-2 rounded-lg text-sm font-medium text-green-700 border border-green-200 hover:bg-green-100 flex items-center justify-center gap-1">
+                                        <Camera size={16}/> Foto
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* BOTÓN RETIRAR STOCK */}
+                        <div className="col-span-2 sm:col-span-1">
+                            <div className="bg-red-50 rounded-2xl p-4 border border-red-100 flex flex-col items-center gap-3 shadow-sm hover:shadow-md transition-all">
+                                <div className="p-3 bg-red-500 text-white rounded-xl shadow-lg shadow-red-200">
+                                    <ArrowUpCircle size={32} />
+                                </div>
+                                <h3 className="font-bold text-gray-800 text-lg">Retirar Stock</h3>
+                                <div className="flex gap-2 w-full mt-2">
+                                    <button onClick={() => triggerScanner('out')} className="flex-1 bg-white py-2 rounded-lg text-sm font-medium text-red-700 border border-red-200 hover:bg-red-100 flex items-center justify-center gap-1">
+                                        <Scan size={16}/> Escáner
+                                    </button>
+                                    <button onClick={() => triggerPhoto('out')} className="flex-1 bg-white py-2 rounded-lg text-sm font-medium text-red-700 border border-red-200 hover:bg-red-100 flex items-center justify-center gap-1">
+                                        <Camera size={16}/> Foto
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onClick={() => setViewMode('list')} className="w-full bg-white border border-gray-200 text-gray-700 py-4 rounded-xl font-bold shadow-sm hover:bg-gray-50 flex items-center justify-center gap-2 mt-4">
+                        <List size={20} /> Ver Inventario Completo
+                    </button>
+                </div>
+            );
+
+            const renderList = () => (
+                <div className="pb-24 pt-6 max-w-4xl mx-auto px-4">
+                    <div className="flex items-center gap-2 mb-6">
+                        <button onClick={() => setViewMode('home')} className="p-2 bg-white rounded-full border shadow-sm"><Home size={20}/></button>
+                        <div className="relative flex-1">
+                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                            <input type="text" placeholder="Buscar..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none shadow-sm" />
+                        </div>
+                    </div>
+
+                    {filteredItems.length === 0 ? (
+                        <div className="text-center py-20 text-gray-400">
+                            <p>No se encontraron productos.</p>
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            {filteredItems.map(item => (
+                                <div key={item.barcode} onClick={() => openProductDetail(item)} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all cursor-pointer relative group flex gap-4 items-center">
+                                    <div className="w-12 h-12 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center shrink-0">
+                                        <Package size={24} />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <h4 className="font-bold text-gray-900 truncate text-lg">
+                                            {item.brand} {item.model}
+                                        </h4>
+                                        <p className="text-xs text-gray-500 font-mono truncate">{item.barcode}</p>
+                                        <div className="flex flex-wrap gap-1 mt-1">
+                                            {item.tags && item.tags.slice(0, 3).map(t => (
+                                                <span key={t} className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{t}</span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div className="text-center px-2">
+                                        <span className="block text-2xl font-bold text-gray-800">{item.stock}</span>
+                                        <span className="text-[10px] text-gray-400 uppercase font-bold">Stock</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+
             return (
-                <div className="min-h-screen bg-gray-50 font-sans text-gray-900 pb-24">
+                <div className="min-h-screen bg-gray-50 font-sans text-gray-900">
                     <header className="bg-white sticky top-0 z-30 shadow-sm border-b border-gray-100">
                         <div className="max-w-4xl mx-auto px-4 py-3 flex justify-between items-center">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 cursor-pointer" onClick={() => setViewMode('home')}>
                                 <div className="w-8 h-8 bg-brand-600 rounded-lg flex items-center justify-center text-white shadow-brand-500/30 shadow-lg"><Package size={20} /></div>
                                 <h1 className="text-xl font-bold tracking-tight text-gray-800">Control de Stock</h1>
                             </div>
                             <div className="flex gap-2 items-center">
-                                <button onClick={handleCloudRefresh} disabled={isSyncing} className={`p-2 rounded-full text-gray-500 hover:bg-gray-100 transition-all ${isSyncing ? 'bg-blue-50 text-blue-600' : ''}`}>
-                                    {isSyncing ? <Loader2 size={20} className="animate-spin" /> : <RefreshCw size={20} />}
+                                <button onClick={handleCloudRefresh} disabled={isSyncing} className={`p-2 rounded-full text-gray-500 hover:bg-gray-100 transition-all ${isSyncing ? 'animate-spin' : ''}`}>
+                                    <RefreshCw size={20} />
                                 </button>
                                 <a href={SHEETS_URL} target="_blank" rel="noopener noreferrer" className="p-2 text-green-600 bg-green-50 rounded-full hover:bg-green-100 transition-colors">
                                     <Sheet size={20} />
@@ -654,56 +769,9 @@
                         </div>
                     </header>
 
-                    <main className="max-w-4xl mx-auto px-4 pt-6">
-                        <div className="relative mb-6">
-                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-                            <input type="text" placeholder="Buscar por marca, modelo, etiqueta, ubicación..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-white border border-gray-200 rounded-2xl focus:ring-2 focus:ring-brand-500 outline-none shadow-sm text-lg" />
-                        </div>
-
-                        {/* Indicador de Auto-Sync discreto */}
-                        {isSyncing && !initialSyncDone && (
-                            <div className="flex items-center justify-center gap-2 text-sm text-gray-500 mb-4 animate-pulse">
-                                <Wifi size={14} /> Sincronizando cambios de la nube...
-                            </div>
-                        )}
-
-                        {filteredItems.length === 0 ? (
-                            <div className="text-center py-20 text-gray-400">
-                                <Package size={48} className="mx-auto mb-4 opacity-20" />
-                                <p>No hay productos.</p>
-                            </div>
-                        ) : (
-                            <div className="space-y-3">
-                                {filteredItems.map(item => (
-                                    <div key={item.barcode} onClick={() => { setScannedData({ barcode: item.barcode }); setEditingItem(item); setShowForm(true); }} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all cursor-pointer relative group">
-                                        <div className="flex justify-between items-start">
-                                            <div className="flex-1 pr-4">
-                                                <div className="flex items-baseline gap-2 mb-1">
-                                                    <span className="font-bold text-gray-900 text-lg">{item.brand}</span>
-                                                    <span className="text-gray-600 font-medium">{item.model}</span>
-                                                </div>
-                                                <div className="flex flex-wrap gap-2 mb-2">
-                                                    {item.location && <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md text-xs font-semibold">{item.location}</span>}
-                                                    {item.installType && <span className="bg-purple-50 text-purple-700 px-2 py-0.5 rounded-md text-xs font-semibold">{item.installType}</span>}
-                                                    {item.tags && item.tags.map(t => (
-                                                        <span key={t} className="bg-orange-50 text-orange-700 px-2 py-0.5 rounded-md text-xs border border-orange-100 flex items-center gap-1"><Tag size={10}/> {t}</span>
-                                                    ))}
-                                                </div>
-                                                <div className="text-[10px] text-gray-400 font-mono flex items-center gap-1">
-                                                    <span className="w-1.5 h-1.5 rounded-full bg-gray-300"></span> {item.barcode}
-                                                </div>
-                                            </div>
-                                            
-                                            <div className="flex flex-col items-center bg-gray-50 rounded-xl p-1 border border-gray-100" onClick={(e) => e.stopPropagation()}>
-                                                <button onClick={(e) => handleQuickStock(e, item.barcode, 1)} className="p-2 text-green-600 hover:bg-white hover:shadow-sm rounded-lg transition-all active:scale-95"><Plus size={18} /></button>
-                                                <span className="font-bold text-gray-900 text-lg py-1 w-8 text-center">{item.stock}</span>
-                                                <button onClick={(e) => handleQuickStock(e, item.barcode, -1)} className="p-2 text-red-500 hover:bg-white hover:shadow-sm rounded-lg transition-all active:scale-95"><Minus size={18} /></button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
+                    <main>
+                        {viewMode === 'home' && renderHome()}
+                        {viewMode === 'list' && renderList()}
                     </main>
 
                     {/* Overlay de Carga IA */}
@@ -714,32 +782,15 @@
                                 <div className="absolute inset-0 bg-purple-500/20 blur-xl rounded-full animate-ping"></div>
                             </div>
                             <p className="text-2xl font-bold mt-6">Analizando Imagen</p>
-                            <p className="text-gray-400 mt-2 text-center max-w-xs">Identificando modelo, marca y especificaciones técnicas...</p>
+                            <p className="text-gray-400 mt-2 text-center max-w-xs">Procesando...</p>
                         </div>
                     )}
 
-                    {/* Botones Flotantes */}
-                    <div className="fixed bottom-6 right-6 flex flex-col gap-4 items-end pointer-events-none">
-                        <div className="pointer-events-auto flex flex-col gap-4">
-                            <button onClick={() => photoInputRef.current?.click()} className="w-14 h-14 bg-white text-purple-600 rounded-2xl shadow-lg shadow-purple-900/10 border border-purple-100 hover:bg-purple-50 transition-all active:scale-95 flex items-center justify-center group relative overflow-hidden">
-                                <div className="absolute inset-0 bg-gradient-to-tr from-purple-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                                <Sparkles size={24} className="relative z-10" />
-                            </button>
-                            
-                            <button onClick={() => { setScannedData({ barcode: '' }); setEditingItem(undefined); setShowForm(true); }} className="w-14 h-14 bg-white text-gray-700 rounded-2xl shadow-lg border border-gray-200 hover:bg-gray-50 transition-all active:scale-95 flex items-center justify-center">
-                                <Plus size={28} />
-                            </button>
-                            
-                            <button onClick={() => setShowScanner(true)} className="w-16 h-16 bg-brand-600 text-white rounded-2xl shadow-xl shadow-brand-500/30 hover:bg-brand-700 transition-all active:scale-95 flex items-center justify-center">
-                                <Scan size={32} />
-                            </button>
-                        </div>
-                    </div>
-
                     <input type="file" ref={photoInputRef} className="hidden" accept="image/*" capture="environment" onChange={handlePhotoUpload} />
 
-                    {showScanner && <Scanner onScanSuccess={handleScanSuccess} onClose={() => setShowScanner(false)} />}
-                    {showForm && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onDelete={handleDeleteItem} onCancel={() => setShowForm(false)} />}
+                    {viewMode === 'scanner' && <Scanner onScanSuccess={handleScanSuccess} onClose={() => setViewMode('home')} />}
+                    {viewMode === 'form' && <ProductForm initialData={scannedData} existingItem={editingItem} onSave={handleSaveItem} onDelete={handleDeleteItem} onCancel={() => setViewMode('home')} mode={actionMode} />}
+                    
                     {toast && <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl text-white font-medium text-sm transition-all animate-bounce z-50 flex items-center gap-2 ${toast.type === 'error' ? 'bg-red-500' : 'bg-gray-900'}`}>{toast.type === 'success' && <div className="w-2 h-2 rounded-full bg-green-400"></div>}{toast.msg}</div>}
                 </div>
             );
