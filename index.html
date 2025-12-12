@@ -301,7 +301,7 @@
                 const response = await ai.models.generateContent({
                     model: "gemini-2.5-flash",
                     contents: `Busca en mercadolibre.com.ar el precio de venta más bajo para el producto nuevo: "${query}". 
-                    Ignora productos usados.
+                    Importante: Ignora productos usados y repuestos sueltos si el término de búsqueda parece un producto completo.
                     Tu respuesta debe contener SOLO el número del precio estimado (sin signos de moneda, ni puntos de mil, solo dígitos). 
                     Si no encuentras un precio exacto, estima basado en los resultados.
                     Ejemplo de respuesta ideal: 15400`,
@@ -613,7 +613,8 @@
             const [installType, setInstallType] = useState(existingItem?.installType || initialData?.installType || '');
             const [details, setDetails] = useState(existingItem?.details || initialData?.details || '');
             const [tags, setTags] = useState(existingItem?.tags || initialData?.tags || []);
-            const [mlPrice, setMlPrice] = useState(existingItem?.mlPrice || 0);
+            // Se inicializa como string vacío si es 0 para facilitar la edición
+            const [mlPrice, setMlPrice] = useState(existingItem?.mlPrice ? existingItem.mlPrice : '');
             const [currentTag, setCurrentTag] = useState('');
             const [stock, setStock] = useState(existingItem?.stock || 0);
             const [isAiLoading, setIsAiLoading] = useState(false);
@@ -638,11 +639,23 @@
             };
 
             const handlePriceCheck = async () => {
-                 const queryParts = [brand, model, details, barcode].filter(Boolean);
-                 if (queryParts.length < 2) {
-                     alert("Se necesita al menos Marca y Modelo para buscar el precio.");
+                 // Construimos la query usando estrictamente los valores actuales del estado (lo que el usuario ha escrito/corregido)
+                 const queryParts = [];
+                 if (brand) queryParts.push(brand);
+                 if (model) queryParts.push(model);
+                 if (color) queryParts.push(color);
+                 if (details && details.length < 30) queryParts.push(details);
+
+                 // Si no hay suficiente info de texto, usamos el barcode como respaldo, pero preferimos el texto corregido.
+                 if (queryParts.length < 2 && barcode) {
+                    queryParts.push(barcode);
+                 }
+
+                 if (queryParts.length === 0) {
+                     alert("Ingresa al menos una Marca y Modelo para buscar el precio.");
                      return;
                  }
+
                  const query = queryParts.join(" ");
                  setIsPriceLoading(true);
                  try {
@@ -650,7 +663,7 @@
                      if (price) {
                          setMlPrice(price);
                      } else {
-                         alert("No se pudo determinar un precio automático.");
+                         alert("No se pudo determinar un precio automático para: " + query);
                      }
                  } catch (e) {
                      alert("Error buscando precio: " + e.message);
@@ -744,7 +757,13 @@
                                 <div className="flex gap-2">
                                     <div className="relative flex-1">
                                         <div className="absolute left-3 top-1/2 -translate-y-1/2 text-ml-blue font-bold">$</div>
-                                        <input type="number" value={mlPrice} onChange={(e) => setMlPrice(Number(e.target.value))} className="w-full pl-6 pr-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-ml-yellow outline-none bg-white text-gray-900 font-bold" placeholder="0" />
+                                        <input 
+                                            type="number" 
+                                            value={mlPrice} 
+                                            onChange={(e) => setMlPrice(e.target.value === '' ? '' : Number(e.target.value))} 
+                                            className="w-full pl-6 pr-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-ml-yellow outline-none bg-white text-gray-900 font-bold" 
+                                            placeholder="0" 
+                                        />
                                     </div>
                                     <button 
                                         type="button" 
